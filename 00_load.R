@@ -3,6 +3,10 @@ library(tidyverse)
 # Load dataset ----
 setwd("Q:/Abteilungsprojekte/Sandec/7_PHIC/02-Projects/P07-GLO-IWISE/P07-03-Analysis")
 d.iwise <- read.csv("IWISE_all.csv", header = TRUE, sep = ",")
+d.iwise <- d.iwise |>
+  filter(!is.na(COUNTRY_ISO3), nchar(COUNTRY_ISO3) == 3) |>
+  mutate(COUNTRY_ISO3 = toupper(trimws(COUNTRY_ISO3)))
+
 summary(d.iwise)
 str(d.iwise)
 
