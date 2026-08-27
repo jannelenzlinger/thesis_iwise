@@ -1,5 +1,6 @@
+# -----------------------------------------------------------------------------
 # 01 Packages and loading data ----
-
+# -----------------------------------------------------------------------------
 install.packages(c("WDI", "countrycode", "dplyr", "readr"))
 
 library(WDI)          # World Bank API client
@@ -14,24 +15,26 @@ mydata <- d.iwise |>
   rename(iso3c = COUNTRY_ISO3,
          year  = YEAR_CALENDAR)
 
-
-# 02  - Validate the merge keys ---- 
-#    Only iso3c and year are used to join. The country name is never used for
-#    matching -- but it is useful for spotting rows where the name and the code
-#    disagree, which means one of them is wrong.
-#
-#    NOTE: this is individual-level data (~91k rows, 76 countries), so every
-#    diagnostic below ends in distinct() or count() to collapse to country
-#    level. If any output says "omitted N rows", it printed at row level and
-#    you are reading a truncated slice -- add distinct() before trusting it.
 # -----------------------------------------------------------------------------
+# 02  - Validate the merge keys ---- 
+# -----------------------------------------------------------------------------
+#  Only iso3c and year are used to join. The country name is never used for
+#  matching -- but it is useful for spotting rows where the name and the code
+#  disagree, which means one of them is wrong.
+#
+#  NOTE: this is individual-level data (~91k rows, 76 countries), so every
+#  diagnostic below ends in distinct() or count() to collapse to country
+#  level. If any output says "omitted N rows", it printed at row level and
+#  you are reading a truncated slice -- add distinct() before trusting it.
+
  
 # Strip stray whitespace and force uppercase -- both silently break joins
 mydata <- mydata |>
   mutate(iso3c = toupper(trimws(iso3c)))
- 
-## --- CHECK A: is every ISO3 code well-formed and recognised? -----------------
 
+# -----------------------------------------------------------------------------
+## --- CHECK A: is every ISO3 code well-formed and recognised? -----------------
+# -----------------------------------------------------------------------------
 # countrycode() returns NA for codes it cannot resolve. Anything listed here is
 # malformed (wrong length, typo) or is a valid World Bank code that ISO does
 # not recognise -- XKX (Kosovo), CHI (Channel Islands). The latter are fine and
@@ -43,7 +46,9 @@ mydata |>
   filter(is.na(check) | nchar(iso3c) != 3) |>
   distinct(iso3c, countrynew)
 
+# -----------------------------------------------------------------------------
 ## --- CHECK B: do your codes and your names agree? ----------------------------
+# -----------------------------------------------------------------------------
 
 # Derives the name from the code and compares it to your own column. Names
 # differ in spelling for legitimate reasons ("Czechia" vs "Czech Republic"),
@@ -58,8 +63,9 @@ mydata |>
            tolower(countrynew) != tolower(name_from_code)) |>
   distinct(iso3c, countrynew, name_from_code) #all good
  
-
+# -----------------------------------------------------------------------------
 ## --- CHECK C: watch for these specific codes ---------------------------------
+# -----------------------------------------------------------------------------
 
 # COD = Congo, Dem. Rep. (Kinshasa) | COG = Congo, Rep. (Brazzaville)
 #   -- if you surveyed both, BOTH must appear below, on separate lines
@@ -68,8 +74,10 @@ mydata |>
 mydata |>
   filter(iso3c %in% c("COD","COG","ROM","ROU","TLS","TMP","TWN","XKX","PSE")) |>
   distinct(iso3c, countrynew, year) #all fine
- 
+
+# -----------------------------------------------------------------------------
 ## --- CHECK D: does every row have exactly one year in range? -----------------
+# -----------------------------------------------------------------------------
 range(mydata$year, na.rm = TRUE)   # 2020 - 2025
 sum(is.na(mydata$year))            # 0
  
@@ -79,8 +87,11 @@ sum(is.na(mydata$year))            # 0
 n_before <- nrow(mydata)
 mydata   <- mydata |> filter(!is.na(iso3c), nchar(iso3c) == 3)
 n_before - nrow(mydata)            # rows removed
- 
+
+# -----------------------------------------------------------------------------
 ## --- CHECK E: exactly ONE collection year per country? -----------------------
+# -----------------------------------------------------------------------------
+
 # Data is individual-level: many respondents per country, but by design
 # each country was surveyed in a single year. This should return ZERO rows.
 # Anything listed here has respondents split across two or more years, which
@@ -95,10 +106,10 @@ mydata |>
 n_distinct(mydata$iso3c)           # 76
  
 
-
-# --- 4. DOWNLOAD WORLD BANK DATA ------ 
-#    start = 2019 gives slack for the carry-forward rule in section 6.
 # -----------------------------------------------------------------------------
+# --- 4. DOWNLOAD WORLD BANK DATA ------ 
+# -----------------------------------------------------------------------------
+#    start = 2019 gives slack for the carry-forward rule in section 6.
 gdp_raw <- WDI(
   country   = "all",
   indicator = c(gdp_pc_ppp = "NY.GDP.PCAP.PP.KD"),
@@ -111,8 +122,9 @@ gdp_raw <- WDI(
 # so this file plus its date is what makes your results reproducible.
 saveRDS(gdp_raw, paste0("data/wdi_raw_", Sys.Date(), ".rds")) #downloaded on 26.08.2026
  
-
+# -----------------------------------------------------------------------------
 # --- 5. CLEAN ----
+# -----------------------------------------------------------------------------
 #    The default download contains ~50 non-countries (World, Euro area,
 #    "Low income", regions). Real countries have a non-Aggregates region.
 # -----------------------------------------------------------------------------
@@ -126,7 +138,10 @@ gdp <- gdp_raw |>
 # thinner. 
 gdp |> count(year, name = "n_countries") |> arrange(year) #all good
 
+# -----------------------------------------------------------------------------
 # --- 6. REVIEW ----
+# -----------------------------------------------------------------------------
+
 # countries flagged by Check E as having more than one wave --------
 # Two waves are mechanically fine -- each is matched to its own year's GDP.
 # But inspect the GDP series for these countries before trusting the result,
@@ -146,8 +161,10 @@ gdp_raw |>
  
 # use the corresponding waves
 
-
+# -----------------------------------------------------------------------------
 # --- 7. MERGE ----
+# -----------------------------------------------------------------------------
+
 #    Rule: match on collection year. If that year is unpublished for a country,
 #    fall back to its most recent EARLIER year, and flag it.
 #    The rule is fixed in advance and applied uniformly --  not decided
@@ -197,8 +214,9 @@ merged |> distinct(iso3c, countrynew, year, gdp_match_status) |>
 merged |> distinct(iso3c, countrynew, year, gdp_year_used, gdp_match_status) |>
   filter(gdp_match_status != "exact year match") #correct
 
-
+# -----------------------------------------------------------------------------
 # --- 8. DIAGNOSTICS ----
+# -----------------------------------------------------------------------------
 
 ## --- CHECK H: row count unchanged. Must be TRUE. -----------------------------
 nrow(merged) == nrow(mydata)
@@ -239,8 +257,10 @@ merged |> distinct(countrynew, iso3c, year, gdp_pc_ppp) |>
 # problem.
 summary(merged$gdp_pc_ppp)
 
-
+# -----------------------------------------------------------------------------
 # --- RENAME and save -----
+# -----------------------------------------------------------------------------
+
 d.iwise_gdp <- merged
 rm(merged)
 saveRDS(d.iwise_gdp, "data/d_iwise_gdp.rds")
