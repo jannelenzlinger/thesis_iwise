@@ -159,12 +159,12 @@ table(n_miss, is.na(d.iwise$iwise_score))
 
 ### Testing the assumptions for the logistic regression
 
-independence of observations
+# independence of observations
 
-no multicollinearity
+# no multicollinearity
 
-linearity of predictors with the log-odds
+# linearity of predictors with the log-odds
 
 
-adequate events per variable.
+# adequate events per variable.
 
