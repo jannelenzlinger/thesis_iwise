@@ -42,7 +42,6 @@ d.iwise_gdp_gov <- readRDS("data/d_iwise_gdp_gov.rds")
 # -----------------------------------------------------------------------------
 jmp_path <- "data/JMP_2025_WLD.xlsx"     # <-- EDIT to wherever your file is
 stopifnot(file.exists(jmp_path))
- 
 # Record the vintage for your methods section.
 jmp_download_date <- file.info(jmp_path)$mtime
 jmp_download_date
@@ -86,7 +85,7 @@ jmp <- read_excel(jmp_path, sheet = "wat") |>
 dim(jmp)
 n_distinct(jmp$iso3)
 range(jmp$year)
-summary(jmp[c("bas", "sm", "prem", "avail", "qual")])
+summary(jmp[c("bas", "sm", "prem", "avail", "qual")]) #tuttobene
  
 # CHECK A2 -- safely managed must not exceed any of its three components.
 # NOTE: it is NOT always equal to the minimum. It is the joint proportion
@@ -96,7 +95,7 @@ jmp |>
   filter(if_all(c(sm, prem, avail, qual), ~!is.na(.x))) |>
   mutate(excess = sm - pmin(prem, avail, qual)) |>
   summarise(n = n(), max_excess = max(excess),      # must be <= 0
-            pct_equal = mean(abs(excess) < 0.01) * 100)
+            pct_equal = mean(abs(excess) < 0.01) * 100) #tuttobene
  
  
 # -----------------------------------------------------------------------------
@@ -107,7 +106,7 @@ jmp |>
 #     That is not a recent rate and cannot be matched to a collection year.
 #     Keep them only as a long-run comparator for your own 5-year figures.
 # -----------------------------------------------------------------------------
-jmp |>
+jmp |> #check that proves arc_sm is a single constant per country rather than a year-by-year rate
   filter(!is.na(arc_sm)) |>
   group_by(iso3) |>
   summarise(n_distinct_arc = n_distinct(round(arc_sm, 6))) |>
@@ -117,11 +116,11 @@ jmp |>
 # -----------------------------------------------------------------------------
 # 4. CHECK YOUR OWN COUNTRIES ARE PRESENT
 # -----------------------------------------------------------------------------
-my_iso <- sort(unique(d.iwise_gdp_gov$COUNTRY_ISO3))
+my_iso <- sort(unique(d.iwise_gdp_gov$iso3c))
 length(my_iso)                                     # expect 76
  
 # CHECK B -- countries of yours with no row in the JMP file at all.
-setdiff(my_iso, unique(jmp$iso3))
+setdiff(my_iso, unique(jmp$iso3)) #all there
  
 # Kosovo and other non-UN entities are the usual absentees. If one of yours
 # appears here under a code JMP writes differently, patch it rather than
@@ -134,7 +133,7 @@ setdiff(my_iso, unique(jmp$iso3))
 #    Run this before writing any code that depends on it. This is the
 #    decision point for the whole variable.
 # -----------------------------------------------------------------------------
-my_iso <- sort(unique(d.iwise_gdp_gov$COUNTRY_ISO3))
+my_iso <- sort(unique(d.iwise_gdp_gov$iso3c))
 length(my_iso)                                          # expect 76
  
 coverage <- jmp |>
@@ -150,25 +149,35 @@ coverage <- jmp |>
 # Your 76 skew towards LMICs, so expect WORSE than 61/223 = 27% missing.
 missing_sm <- coverage |> filter(n_sm == 0) |> pull(iso3)
 length(missing_sm); missing_sm
+
+# countries missing sm: arg, aus, bfa, bol, chn, cmr, com, gab, gin, jam, ken, 
+# lbr, mli, mrt, mus, nam, ner, pan, slv, som, ury, ven, zmb
+
  
 coverage |> summarise(full_sm = sum(n_sm == 5), none_sm = sum(n_sm == 0),
                       full_bas = sum(n_bas == 5), none_bas = sum(n_bas == 0))
  
- 
+
+coverage |> filter(n_sm > 0, n_sm < 5)      # all good (COG partial due to coding)
+coverage |> filter(n_bas > 0, n_bas < 5)    # all good (COG partial due to coding)
+coverage |> filter(n_bas == 0)              # No basic = ARG (Argentina)
+
+
+
 # -----------------------------------------------------------------------------
 # 6. THE RATE FUNCTION
 #    Given a country's series and a target end-year, returns the window used
 #    and three progress measures.
 # -----------------------------------------------------------------------------
-progress_rate <- function(df, target_year, value_col, window = 5) {
+progress_rate <- function(df, target_year, value_col, window = 5) { #target year = GWP year
  
-  s <- df |>
+  s <- df |> #clean data, drop years where this particular column is missing, sort ascending
     filter(!is.na(.data[[value_col]])) |>
     arrange(year)
  
   if (nrow(s) == 0) return(tibble(win_start = NA_integer_, win_end = NA_integer_,
                                   n_yrs = 0L, level = NA_real_, rate_pp = NA_real_,
-                                  rate_ols = NA_real_, gapclose = NA_real_))
+                                  rate_ols = NA_real_, gapclose = NA_real_)) #Returns the all-NA row rather than erroring (ARG)
  
   # End of window: the collection year, or the latest available year if the
   # series stops earlier. NEVER later than the collection year.
@@ -177,13 +186,15 @@ progress_rate <- function(df, target_year, value_col, window = 5) {
                                       n_yrs = 0L, level = NA_real_, rate_pp = NA_real_,
                                       rate_ols = NA_real_, gapclose = NA_real_))
  
+  
+  
   start <- end - (window - 1)
   w <- s |> filter(year >= start, year <= end)
  
   if (nrow(w) < 2) return(tibble(win_start = min(w$year), win_end = end,
                                  n_yrs = nrow(w), level = w[[value_col]][nrow(w)],
                                  rate_pp = NA_real_, rate_ols = NA_real_,
-                                 gapclose = NA_real_))
+                                 gapclose = NA_real_)) #bail out if data too short
  
   y0 <- w[[value_col]][1]; y1 <- w[[value_col]][nrow(w)]
   t0 <- w$year[1];         t1 <- w$year[nrow(w)]
@@ -211,8 +222,8 @@ progress_rate <- function(df, target_year, value_col, window = 5) {
 #    PSE contributes two rows, as before.
 # -----------------------------------------------------------------------------
 keys <- d.iwise_gdp_gov |>
-  distinct(COUNTRY_ISO3, YEAR_CALENDAR) |>
-  arrange(COUNTRY_ISO3, YEAR_CALENDAR)
+  distinct(iso3c, year) |>
+  arrange(iso3c, year)
  
 nrow(keys)   # expect 77 if PSE is the only two-wave country
  
@@ -221,14 +232,14 @@ nrow(keys)   # expect 77 if PSE is the only two-wave country
 series <- c("sm", "bas", "prem", "avail", "qual")
  
 jmp_lookup <- keys |>
-  mutate(res = map2(COUNTRY_ISO3, YEAR_CALENDAR, function(iso, yr) {
+  mutate(res = map2(iso3c, year, function(iso, yr) {
     d <- jmp |> filter(iso3 == iso)
     map(series, ~progress_rate(d, yr, .x) |> rename_with(function(n) paste0(.x, "_", n))) |>
       bind_cols()
   })) |>
   unnest(res) |>
   mutate(
-    jmp_lag = YEAR_CALENDAR - sm_win_end,        # 0 = contemporaneous
+    jmp_lag = year - sm_win_end,        # 0 = contemporaneous
     # Lowest of the three components at the end of the window -- the binding
     # constraint. Safely managed is bounded above by this, and equals it about
     # 81% of the time. Descriptive only.
@@ -240,39 +251,97 @@ jmp_lookup <- keys |>
     )
   )
  
+#CHECK
+dim(jmp_lookup)          # 77 x 39
+names(jmp_lookup)
+jmp_lookup |> select(iso3c, year, sm_level, sm_rate_pp, bas_level, bas_rate_pp)
+
 # CHECK E0 -- distribution of the binding constraint across your countries.
-jmp_lookup |> count(sm_binding)
+jmp_lookup |> count(sm_binding) #what is the weakest link (the lowest value)
  
 # CHECK E -- every 2025 country should show lag 1 (series ends 2024).
-jmp_lookup |> count(YEAR_CALENDAR, jmp_lag)
+jmp_lookup |> count(year, jmp_lag) #makessense
  
 # CHECK F -- any window shorter than 5 years?
-jmp_lookup |> filter(sm_n_yrs < 5) |> select(COUNTRY_ISO3, YEAR_CALENDAR, sm_n_yrs)
+jmp_lookup |> filter(sm_n_yrs < 5) |> select(iso3c, year, sm_n_yrs) #24 years with 0
  
+jmp_lookup |> filter(sm_n_yrs < 5) |> count(sm_n_yrs) #none with 3-4 years
+
+jmp_lookup |> summarise(has_sm = sum(!is.na(sm_rate_pp)),
+                        has_bas = sum(!is.na(bas_rate_pp)))
+
 # CHECK G -- ceiling cases: countries at or near 100% throughout.
 jmp_lookup |> filter(sm_level >= 99) |>
-  select(COUNTRY_ISO3, sm_level, sm_rate_pp, sm_gapclose) |> print(n = 40)
+  select(iso3c, sm_level, sm_rate_pp, sm_gapclose) |> print(n = 40) #GBR and ISR have 99.(/99.5)
+ 
+ 
+# -----------------------------------------------------------------------------
+# 7b. BLANK RATES THAT ARE NOT MEASURED CHANGE
+#     Two failure modes, both real in this sample:
+#       ARG  no data after 2016 -- a 2021 survey gets a window ending 5 years
+#            before fieldwork, and no safely managed series at all
+#       COG  series ends 2021 and the final years are a straight-line
+#            projection -- a 2-point rate of the model, not of the country
+#     Rather than dropping these by name, apply a uniform rule. Each series
+#     gets its OWN lag, because sm and bas can end in different years.
+#
+#     SET THESE DELIBERATELY -- they are analytic choices you must justify.
+# -----------------------------------------------------------------------------
+MAX_LAG  <- 2   # years between window end and fieldwork; 1 is normal for 2025
+MIN_YRS  <- 3   # annual values needed before a slope means anything
+ 
+for (p in series) {
+  lag_col <- paste0(p, "_lag")
+  jmp_lookup[[lag_col]] <- jmp_lookup$year - jmp_lookup[[paste0(p, "_win_end")]]
+ 
+  bad <- (jmp_lookup[[lag_col]] > MAX_LAG) |
+         (jmp_lookup[[paste0(p, "_n_yrs")]] < MIN_YRS)
+  bad[is.na(bad)] <- FALSE          # already-NA rows need no blanking
+ 
+  for (m in c("rate_pp", "rate_ols", "gapclose")) {
+    jmp_lookup[[paste0(p, "_", m)]][bad] <- NA_real_
+  }
+}
+ 
+# NOTE: _level, _win_start, _win_end and _n_yrs are deliberately NOT blanked.
+# The level is still a valid (if stale) coverage figure, and the window
+# columns are the audit trail showing why the rate was dropped.
+ 
+# CHECK G2 -- which countries lost a rate, and why.
+jmp_lookup |>
+  filter(is.na(sm_rate_pp) | is.na(bas_rate_pp)) |>
+  select(iso3c, year, sm_win_end, sm_n_yrs, sm_lag, sm_rate_pp,
+         bas_win_end, bas_n_yrs, bas_lag, bas_rate_pp) |>
+  arrange(desc(bas_lag)) |>
+  print(n = 40) #24 are missing because no SM and ARG
+ 
+# CHECK G3 -- final usable counts. This is the number your model runs on.
+jmp_lookup |>
+  summarise(n = n(),
+            has_sm_rate  = sum(!is.na(sm_rate_pp)),
+            has_bas_rate = sum(!is.na(bas_rate_pp)))
  
  
 # -----------------------------------------------------------------------------
 # 8. MERGE
 # -----------------------------------------------------------------------------
-d.iwise_jmp <- d.iwise_gdp_gov |>
-  left_join(jmp_lookup, by = c("COUNTRY_ISO3", "YEAR_CALENDAR"),
+d.iwise_gdp_gov_jmp <- d.iwise_gdp_gov |>
+  left_join(jmp_lookup, by = c("iso3c", "year"),
             relationship = "many-to-one")
- 
+
 # CHECK H -- row count MUST be unchanged.
-nrow(d.iwise_gdp_gov); nrow(d.iwise_jmp)
-stopifnot(nrow(d.iwise_gdp_gov) == nrow(d.iwise_jmp))
+nrow(d.iwise_gdp_gov_jmp); nrow(d.iwise_gdp_gov_jmp) #good
+stopifnot(nrow(d.iwise_gdp_gov) == nrow(d.iwise_gdp_gov_jmp)) #good
  
 # CHECK I -- missingness at COUNTRY level, not respondent level.
-d.iwise_jmp |>
-  distinct(COUNTRY_ISO3, sm_level, sm_rate_pp, bas_level, bas_rate_pp) |>
-  summarise(across(everything(), ~sum(is.na(.x))))
+d.iwise_gdp_gov_jmp |>
+  distinct(iso3c, sm_level, sm_rate_pp, bas_level, bas_rate_pp) |>
+  summarise(across(everything(), ~sum(is.na(.x)))) #correct 24 sm and one base rate (ARG)
  
 # CHECK J -- do the two rate definitions agree on ranking?
-with(distinct(d.iwise_jmp, COUNTRY_ISO3, sm_rate_pp, sm_gapclose),
-     cor(sm_rate_pp, sm_gapclose, use = "complete.obs", method = "spearman"))
+with(distinct(d.iwise_gdp_gov_jmp, iso3c, sm_rate_pp, sm_gapclose),
+     cor(sm_rate_pp, sm_gapclose, use = "complete.obs", method = "spearman")) #0.896
+
 # High correlation means the ceiling isn't biting hard and either will do.
 # Low correlation means the choice of definition changes your results --
 # report both.
@@ -285,17 +354,13 @@ with(distinct(d.iwise_jmp, COUNTRY_ISO3, sm_rate_pp, sm_gapclose),
 jmp_lookup |>
   mutate(kink = abs(sm_rate_pp - sm_rate_ols)) |>
   filter(kink > 0.05) |>
-  select(COUNTRY_ISO3, YEAR_CALENDAR, sm_win_start, sm_win_end,
+  select(iso3c, year, sm_win_start, sm_win_end,
          sm_rate_pp, sm_rate_ols, kink, sm_binding) |>
   arrange(desc(kink)) |>
-  print(n = 30)
+  print(n = 30) #gives 0, can be ignored
  
-# CHECK L -- VARIANCE. This is the one that decides whether the covariate is
-# usable. Measured on this file: for the 159 countries with a full 2020-2024
-# safely-managed window, the median rate is 0.05 pp/yr, 36% fall within
-# +/-0.05 pp/yr of zero, and 8% are exactly zero. A covariate that is flat for
-# a third of your sample will struggle to explain anything.
-jmp_lookup |>
+# CHECK L -- VARIANCE.
+jmp_lookup |> #for sm
   summarise(n = sum(!is.na(sm_rate_pp)),
             median = median(sm_rate_pp, na.rm = TRUE),
             iqr_lo = quantile(sm_rate_pp, .25, na.rm = TRUE),
@@ -305,17 +370,37 @@ jmp_lookup |>
  
 hist(jmp_lookup$sm_rate_pp, breaks = 30,
      main = "5-year safely managed rate, pp/year", xlab = "pp/year")
- 
+#Roughly unimodal around 0.2, right-skewed, with a handful of countries above 1.5 and a couple below
+# Median: 0.230
+
+
+
+
+jmp_lookup |> #for basic
+  summarise(n = sum(!is.na(bas_rate_pp)),
+            median = median(bas_rate_pp, na.rm = TRUE),
+            iqr_lo = quantile(bas_rate_pp, .25, na.rm = TRUE),
+            iqr_hi = quantile(bas_rate_pp, .75, na.rm = TRUE),
+            pct_flat = mean(abs(bas_rate_pp) < 0.05, na.rm = TRUE) * 100,
+            pct_zero = mean(abs(bas_rate_pp) < 1e-9, na.rm = TRUE) * 100)
+
+hist(jmp_lookup$bas_rate_pp, breaks = 30,
+     main = "5-year at least basic rate, pp/year", xlab = "pp/year")
+
+# 
+# Median: 0.338
+
+
 # CHECK M -- your own 5-year rate against JMP's published 24-year average.
 # They measure different periods, so they will not match; a country where they
 # have OPPOSITE SIGNS has changed direction since 2000, which is exactly the
 # kind of country your hypothesis is about.
-jmp_lookup |>
-  left_join(distinct(jmp, iso3, arc_sm), by = c("COUNTRY_ISO3" = "iso3")) |>
-  filter(!is.na(sm_rate_pp), !is.na(arc_sm), sign(sm_rate_pp) != sign(arc_sm)) |>
-  select(COUNTRY_ISO3, sm_rate_pp, arc_sm, sm_level) |>
-  arrange(sm_rate_pp) |>
-  print(n = 40)
+#jmp_lookup |>
+#  left_join(distinct(jmp, iso3, arc_sm), by = c("iso3c" = "iso3")) |>
+#  filter(!is.na(sm_rate_pp), !is.na(arc_sm), sign(sm_rate_pp) != sign(arc_sm)) |>
+#  select(iso3c, sm_rate_pp, arc_sm, sm_level) |>
+#  arrange(sm_rate_pp) |>
+#  print(n = 40)
  
 # For any country worth a closer look, plot the raw series.
 # plot_country <- function(iso, y0 = 2014) {
@@ -327,7 +412,87 @@ jmp_lookup |>
 # }
 # plot_country("XXX")
  
-saveRDS(d.iwise_jmp, "data/d_iwise_jmp.rds")
+saveRDS(d.iwise_gdp_gov_jmp, "data/d_iwise_gdp_gov_jmp.rds")
  
  
 # =============================================================================
+# 9. SAFELY MANAGED vs AT LEAST BASIC -- material for the supervisor meeting
+#    Both variables already exist. This section does not create anything new;
+#    it summarises them side by side so the choice can be argued rather than
+#    assumed. Everything works on the 76 country-year rows, NOT on the
+#    91,166 respondent rows -- the covariate varies only between countries.
+# =============================================================================
+ 
+# --- 9a. Headline comparison ------------------------------------------------
+compare <- jmp_lookup |>
+  summarise(
+    across(c(sm_rate_pp, bas_rate_pp),
+           list(n        = ~sum(!is.na(.x)),
+                missing  = ~sum(is.na(.x)),
+                median   = ~median(.x, na.rm = TRUE),
+                iqr_lo   = ~quantile(.x, .25, na.rm = TRUE),
+                iqr_hi   = ~quantile(.x, .75, na.rm = TRUE),
+                min      = ~min(.x, na.rm = TRUE),
+                max      = ~max(.x, na.rm = TRUE),
+                sd       = ~sd(.x, na.rm = TRUE),
+                pct_flat = ~mean(abs(.x) < 0.05, na.rm = TRUE) * 100,
+                pct_zero = ~mean(abs(.x) < 1e-9, na.rm = TRUE) * 100,
+                pct_neg  = ~mean(.x < 0, na.rm = TRUE) * 100))) |>
+  pivot_longer(everything(),
+               names_to = c("variable", "stat"),
+               names_pattern = "^(sm|bas)_rate_pp_(.*)$") |>
+  pivot_wider(names_from = variable, values_from = value) |>
+  mutate(across(c(sm, bas), ~round(.x, 3)))
+ 
+print(compare, n = 20)
+ 
+# --- 9b. Ceiling exposure ---------------------------------------------------
+# How many countries sit so high that the rate cannot move much.
+jmp_lookup |>
+  summarise(sm_ge99  = sum(sm_level  >= 99, na.rm = TRUE),
+            sm_ge95  = sum(sm_level  >= 95, na.rm = TRUE),
+            bas_ge99 = sum(bas_level >= 99, na.rm = TRUE),
+            bas_ge95 = sum(bas_level >= 95, na.rm = TRUE))
+ 
+# --- 9c. Do the two rank countries the same way? ----------------------------
+# High correlation: the choice is presentational. Low: it is substantive.
+with(jmp_lookup, cor(sm_rate_pp, bas_rate_pp,
+                     use = "complete.obs", method = "spearman"))
+ 
+with(jmp_lookup, cor(sm_rate_pp, bas_rate_pp,
+                     use = "complete.obs", method = "pearson"))
+ 
+plot(jmp_lookup$bas_rate_pp, jmp_lookup$sm_rate_pp,
+     xlab = "at least basic, pp/year", ylab = "safely managed, pp/year",
+     main = "Do the two rungs agree?"); abline(0, 1, lty = 2)
+ 
+# --- 9d. Who is missing from which -----------------------------------------
+jmp_lookup |>
+  mutate(status = case_when(
+    !is.na(sm_rate_pp) &  !is.na(bas_rate_pp) ~ "both",
+     is.na(sm_rate_pp) &  !is.na(bas_rate_pp) ~ "basic only",
+    !is.na(sm_rate_pp) &   is.na(bas_rate_pp) ~ "safely managed only",
+    TRUE                                      ~ "neither")) |>
+  count(status)
+ 
+# --- 9e. Country table to take to the meeting -------------------------------
+regions <- read_excel(jmp_path, sheet = "wat") |>
+  distinct(iso3, country = name, region_sdg, region_income)
+
+
+overview_table_sdg <- jmp_lookup |>
+  left_join(regions, by = c("iso3c" = "iso3")) |>
+  select(iso3c, country, region_sdg, region_income, year,
+         sm_level, sm_rate_pp, sm_win_start, sm_win_end, sm_n_yrs, sm_lag,
+         bas_level, bas_rate_pp, bas_win_start, bas_win_end, bas_n_yrs, bas_lag,
+         sm_binding) |>
+  arrange(is.na(sm_rate_pp), sm_rate_pp)
+ 
+print(overview_table_sdg, n = 80)
+library(readr)
+write_csv(overview_table_sdg, "data/jmp_rate_comparison.csv")
+ 
+# NOTE: region_sdg and region_income need to be carried through section 3.
+# If the join above fails, add them to the select() there:
+#   select(iso3, country = name, year, ..., region_sdg, region_income)
+ 
