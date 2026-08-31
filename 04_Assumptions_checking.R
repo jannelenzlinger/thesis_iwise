@@ -28,6 +28,9 @@
 #
 # =============================================================================
 
+d.iwise <- readRDS("data/iwise_analysis.rds")
+rm(d.iwise)
+
 # ---- 0. PACKAGES ------------------------------------------------------------
 # Install once, then comment out.
 pkgs <- c(

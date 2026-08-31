@@ -412,8 +412,7 @@ hist(jmp_lookup$bas_rate_pp, breaks = 30,
 # }
 # plot_country("XXX")
  
-saveRDS(d.iwise_gdp_gov_jmp, "data/d_iwise_gdp_gov_jmp.rds")
- 
+
  
 # =============================================================================
 # 9. SAFELY MANAGED vs AT LEAST BASIC -- material for the supervisor meeting
@@ -495,4 +494,28 @@ write_csv(overview_table_sdg, "data/jmp_rate_comparison.csv")
 # NOTE: region_sdg and region_income need to be carried through section 3.
 # If the join above fails, add them to the select() there:
 #   select(iso3, country = name, year, ..., region_sdg, region_income)
+
+
+
+
+
+
+#delete the ones I don't need after discussion with Karin
+
+library(dplyr)
+d.iwise_gdp_gov_jmp <- d.iwise_gdp_gov_jmp |>
+  dplyr::select(-dplyr::any_of(c("sm_rate_pp", "sm_rate_ols", "sm_gapclose",
+                                 "sm_win_start", "sm_win_end", "sm_n_yrs", "sm_lag",
+                                 "bas_rate_ols", "bas_gapclose")),
+                -dplyr::matches("^(prem|avail|qual)_(rate_pp|rate_ols|gapclose|win_start|win_end|n_yrs|lag)$"))
  
+#double-check
+names(d.iwise_gdp_gov_jmp) |> grep(pattern = "^(sm|bas|prem|avail|qual|jmp)_", value = TRUE)
+nrow(d.iwise_gdp_gov_jmp)   # must be 91,166
+d.iwise_gdp_gov_jmp |>
+  dplyr::distinct(iso3c, bas_level, bas_rate_pp, sm_level) |>
+  dplyr::summarise(dplyr::across(everything(), ~sum(is.na(.x)))) #values unchanged
+summary(d.iwise_gdp_gov_jmp$bas_rate_pp) #sanity check
+
+
+saveRDS(d.iwise_gdp_gov_jmp, "data/iwise_analysis.rds")
