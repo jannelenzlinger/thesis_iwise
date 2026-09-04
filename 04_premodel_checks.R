@@ -79,16 +79,16 @@ v.wgi.est <- c("wgi_va_est", "wgi_pv_est", "wgi_ge_est",
 v.wgi.sc  <- c("wgi_va_sc",  "wgi_pv_sc",  "wgi_ge_sc",
                "wgi_rq_sc",  "wgi_rl_sc",  "wgi_cc_sc")
 
-v.wgi <- v.wgi.sc   # pick ONE family; _est reads as "per 1 SD of governance"
+v.wgi <- v.wgi.sc   # preference
 
 v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi)
 v.categorical <- c("female", "urban_imp", "age_gp_profile",
                    "maritalstatus", "employment", "education")
-# The four other Gallup indices are NOT used as predictors. They are missing
+# The four other Gallup indices are currently NOT used as predictors. They are missing
 # for 30-73% of respondents (INDEX_YD 70-73%, INDEX_CA 40-47%, INDEX_PH 29-31%;
 # INDEX_FS is complete), so including them would cut the analytic sample to
 # roughly a quarter. Kept here only for the correlation matrix in Check 7.
-v.indices     <- c("INDEX_PH", "INDEX_FS", "INDEX_CA", "INDEX_YD")
+v.indices     <- c("INDEX_PH", "INDEX_FS", "INDEX_CA")
 v.cluster     <- "iso3c"
 
 # NOTE: the per-model variable lists (v.model.fl, v.model.inc) are defined
@@ -104,13 +104,10 @@ v.cluster     <- "iso3c"
 # =============================================================================
 
 # 1a. What does R currently think these variables are?
-class(d.iwise$INDEX_FL_ord)      # want: "ordered" "factor"
+class(d.iwise$INDEX_FL_ord)      # good
 class(d.iwise$INCOME_5)
-levels(d.iwise$INDEX_FL_ord)     # want: ascending numeric order
+levels(d.iwise$INDEX_FL_ord)     # good
 levels(d.iwise$INCOME_5)
-
-is.ordered(d.iwise$INDEX_FL_ord) # the check that actually matters
-is.ordered(d.iwise$INCOME_5)
 
 # NOTE: Positron's Variables pane may show "fct" even for ordered factors.
 # is.ordered() is authoritative; the pane is a display layer.
@@ -121,9 +118,6 @@ is.ordered(d.iwise$INCOME_5)
 #     alphabetical hazard entirely.
 d.iwise <- d.iwise %>%
   mutate(
-    INDEX_FL_ord = factor(as.numeric(as.character(INDEX_FL_ord)), ordered = TRUE),
-    INCOME_5     = factor(as.numeric(as.character(INCOME_5)),     ordered = TRUE),
-
     # Categorical predictors: labelled factors. The FIRST level becomes the
     # reference category the coefficients are compared against - choose it
     # deliberately rather than accepting R's alphabetical default.
@@ -149,11 +143,119 @@ d.iwise <- d.iwise %>%
 str(d.iwise %>% select(any_of(c(v.outcomes, v.continuous, v.categorical))))
 
 
+# --- Financial Life Index Recalculation --------------------------------------
+# ---- STEP 1: RECODE EACH ITEM TO 0/1 ----------------------------------------
+# The positive answer is code 1 for ALL FOUR items. (Do not confuse these with
+# the food/shelter items WP40/WP43, where the positive answer is "No" = 2.)
+
+d.iwise <- d.iwise %>%
+  mutate(
+
+    # WP2319: 1 = "living comfortably on present income".
+    # if_else() returns 1 when the condition is TRUE, 0 when FALSE, and - this
+    # is the important part - NA when the input is NA. So codes 2-6 (getting
+    # by, difficult, very difficult, DK, refused) all become 0, exactly as
+    # Gallup specifies, while a genuinely unanswered item stays NA and is
+    # excluded from the calculation.
+    s_2319 = if_else(WP2319 == 1, 1, 0),
+
+    # WP30: 1 = "Satisfied" with standard of living.
+    # Codes 2 (dissatisfied), 3 (DK), 4 (refused) -> 0.
+    s_30 = if_else(WP30 == 1, 1, 0),
+
+    # WP31: 1 = standard of living "getting better".
+    # Codes 2 (the same), 3 (getting worse), 4 (DK), 5 (refused) -> 0.
+    # NOTE "the same" scores 0 - only improvement counts as positive.
+    s_31 = if_else(WP31 == 1, 1, 0),
+
+    # WP88: 1 = local economic conditions "getting better".
+    # Same structure as WP31. Needed only for the validation in Step 2.
+    s_88 = if_else(WP88 == 1, 1, 0)
+  )
+
+# Sanity check: each should be 0/1 with NAs only where the item was unanswered.
+d.iwise %>%
+  summarise(across(c(s_2319, s_30, s_31, s_88),
+                   list(n_1 = ~sum(.x == 1, na.rm = TRUE),
+                        n_0 = ~sum(.x == 0, na.rm = TRUE),
+                        n_NA = ~sum(is.na(.x)))))
+
+
+# ---- STEP 2: VALIDATE BY REPRODUCING GALLUP'S OWN 4-ITEM INDEX --------------
+# Do NOT skip this. If your recoding is wrong, the 3-item version inherits the
+# error silently. Reconstruct Gallup's index and check it matches theirs.
+
+d.iwise <- d.iwise %>%
+  mutate(
+
+    # How many of the three non-WP2319 items does this respondent have?
+    # across() selects the three columns; !is.na() gives TRUE where answered;
+    # rowSums() counts the TRUEs per respondent (TRUE counts as 1).
+    n_other = rowSums(!is.na(across(c(s_30, s_31, s_88)))),
+
+    # The second component: the MEAN of whichever of the three are available.
+    # na.rm = TRUE is what makes the denominator vary - with all three it
+    # divides by 3, with two it divides by 2. That varying denominator is the
+    # entire source of the 25/75 levels.
+    mean_other = rowMeans(across(c(s_30, s_31, s_88)), na.rm = TRUE),
+
+    # Gallup's eligibility rule: WP2319 answered AND at least 2 of the other 3.
+    FLI_check = if_else(
+      !is.na(s_2319) & n_other >= 2,
+      100 * (s_2319 + mean_other) / 2,   # average the two components, x100
+      NA_real_                            # otherwise no index
+    )
+  )
+
+# Agreement with Gallup's variable. Should be ~1.00.
+# The < 0.01 tolerance allows for floating-point rounding (33.33 vs 33.333...).
+d.iwise %>%
+  filter(!is.na(INDEX_FL_ord)) %>%
+  summarise(
+    n = n(),
+    agree = mean(abs(FLI_check -
+                     as.numeric(as.character(INDEX_FL_ord))) < 0.01,
+                 na.rm = TRUE)
+  ) #agree = 1
+
+
+# ---- STEP 3: BUILD THE 3-ITEM INDEX -----------------------------------------
+# Same recipe, WP88 removed. The second component is now the mean of WP30 and
+# WP31 only - a FIXED denominator of 2 for everyone, which is the whole point.
+
+d.iwise <- d.iwise %>%
+  mutate(
+
+    # Eligibility: WP2319 plus BOTH remaining items. Gallup's "at least 2 of 3"
+    # becomes "2 of 2" here. Requiring both keeps the second component from
+    # resting on a single question, and costs nothing - every respondent who
+    # currently has an index already has WP30 and WP31.
+    FLI_3item_num = if_else(
+      !is.na(s_2319) & !is.na(s_30) & !is.na(s_31),
+
+      # Component 1 = s_2319, which is 0 or 1.
+      # Component 2 = (s_30 + s_31) / 2, which is 0, 0.5, or 1.
+      # Average them and multiply by 100.
+      # Possible results: 0, 25, 50, 75, 100 - five levels, and every
+      # respondent's score is built the same way.
+      100 * (s_2319 + (s_30 + s_31) / 2) / 2,
+
+      NA_real_
+    ),
+
+    # Ordered factor, so polr()/clm() treat it as ordinal.
+    # as.numeric() first so levels sort 0 < 25 < 50 < 75 < 100 rather than
+    # alphabetically ("0","100","25","50","75") - the same trap as Check 1.
+    FLI_3item = factor(FLI_3item_num, ordered = TRUE)
+  )
+
+
 # ---- SETUP: DERIVED VARIABLES FIRST -----------------------------------------
 # IMPORTANT: create every derived variable on d.iwise BEFORE splitting.
 # Anything you mutate afterwards will not propagate into d.fl / d.inc.
 
 v.fli.items <- c("WP2319", "WP30", "WP31", "WP88")
+
 
 d.iwise <- d.iwise %>%
   mutate(
@@ -180,6 +282,8 @@ d.iwise <- d.iwise %>%
            .names = "{.col}_num")
   )
 
+# not forget ethiopia
+d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
 
 # ---- SPLIT INTO TWO ANALYTIC SAMPLES ----------------------------------------
 # Each outcome gets its own frame. This is the point: a respondent missing
@@ -688,6 +792,17 @@ check_separation(d.inc, "INCOME_5",     rhs)
 
 # IF DETECTED: collapse the offending category, drop the variable, or plan on
 # Firth penalised likelihood (brglm2::brglmFit) at the modelling stage.
+
+saveRDS(list(d.iwise = d.iwise, d.fl = d.fl, d.inc = d.inc),
+        "data_prepared.rds")
+
+saveRDS(list(d.iwise = d.iwise, d.fl = d.fl, d.inc = d.inc,
+             rhs = rhs, rhs_ctx = rhs_ctx,
+             v.categorical = v.categorical, v.wgi = v.wgi,
+             v.cluster = v.cluster),
+        "data_prepared.rds")
+
+
 
 
 # =============================================================================
