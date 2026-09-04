@@ -3,25 +3,12 @@
 # Dataset: iwise_analysis
 # Outcomes: INDEX_FL_ord (Financial Life Index), INCOME_5 (Income Quintiles)
 # Main predictor: iwisescore (Water Insecurity Experiences, 0-36)
-# Written for Positron / R >= 4.2
 #
 # WHAT THIS SCRIPT DOES
 # ---------------------
 # Nine checks, in order, on the DATA. It STOPS BEFORE THE MODEL IS FITTED.
 # The four checks that require a fitted model are listed at the end.
 # See premodel_checks_explained.md for the reasoning behind each one.
-#
-# TWO THINGS TO KNOW UP FRONT
-# ---------------------------
-# 1. Neither outcome is binary, so the model is ORDINAL logistic regression
-#    (proportional odds / cumulative logit), not binary logistic. Every binary
-#    assumption still applies, PLUS proportional odds - checked after fitting.
-#
-# 2. The Financial Life Index keeps ALL respondents with a computed index -
-#    both 3-item and 4-item responders, per Gallup's own methodology. The
-#    outcome therefore retains all 9 levels. Levels 25 and 75 are reachable
-#    ONLY from 3-item responses, so they exist solely in that group; a
-#    sensitivity check comparing the two groups is included in Check 3.
 #
 # STRUCTURE
 # ---------
@@ -58,92 +45,11 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 select <- dplyr::select   # MASS and others mask dplyr::select; be explicit
 
 
-# ---- 1. LOAD DATA AND DEFINE VARIABLE GROUPS --------------------------------
-# Work on a copy so the raw object stays clean and you can always restart.
-
 # Load from FILE, not from an object already in memory, so the script runs
 # standalone in a fresh session tomorrow. Use whichever matches your file.
 d.iwise <- readRDS("data/iwise_analysis.rds")
 
-v.outcomes    <- c("INDEX_FL_ord", "INCOME_5")
-v.main        <- "iwisescore"      # main predictor, 0-36
-v.ctrl        <- "iwise4"          # alternative 4-item version, 0-12
-
-# The WGI come in two suffix families, one row per country-year:
-#   _est = governance estimate, standard normal units, approx. -2.5 to 2.5
-#   _sc  = the same estimate mapped onto a 0-100 scale
-# They are transformations of each other, so NEVER use both for the same
-# dimension in one model - that is perfect collinearity.
-v.wgi.est <- c("wgi_va_est", "wgi_pv_est", "wgi_ge_est",
-               "wgi_rq_est", "wgi_rl_est", "wgi_cc_est")
-v.wgi.sc  <- c("wgi_va_sc",  "wgi_pv_sc",  "wgi_ge_sc",
-               "wgi_rq_sc",  "wgi_rl_sc",  "wgi_cc_sc")
-
-v.wgi <- v.wgi.sc   # preference
-
-v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi)
-v.categorical <- c("female", "urban_imp", "age_gp_profile",
-                   "maritalstatus", "employment", "education")
-# The four other Gallup indices are currently NOT used as predictors. They are missing
-# for 30-73% of respondents (INDEX_YD 70-73%, INDEX_CA 40-47%, INDEX_PH 29-31%;
-# INDEX_FS is complete), so including them would cut the analytic sample to
-# roughly a quarter. Kept here only for the correlation matrix in Check 7.
-v.indices     <- c("INDEX_PH", "INDEX_FS", "INDEX_CA")
-v.cluster     <- "iso3c"
-
-# NOTE: the per-model variable lists (v.model.fl, v.model.inc) are defined
-# AFTER the split below, once the derived variables exist.
-
-
-# =============================================================================
-# CHECK 1: VARIABLE TYPES AND LEVEL ORDERING
-# -----------------------------------------------------------------------------
-# WHY: the model must know the outcome is ORDERED. A plain factor either errors
-# or discards the ordering. Levels sorted alphabetically ("0","100","16.67")
-# produce a model that runs fine and is completely wrong, with no warning.
-# =============================================================================
-
-# 1a. What does R currently think these variables are?
-class(d.iwise$INDEX_FL_ord)      # good
-class(d.iwise$INCOME_5)
-levels(d.iwise$INDEX_FL_ord)     # good
-levels(d.iwise$INCOME_5)
-
-# NOTE: Positron's Variables pane may show "fct" even for ordered factors.
-# is.ordered() is authoritative; the pane is a display layer.
-
-# 1b. Recode. Safe to run even if already correct - it is idempotent.
-#     as.character() -> the labels; as.numeric() -> real numbers;
-#     factor() on a NUMERIC vector sorts levels numerically, which removes the
-#     alphabetical hazard entirely.
-d.iwise <- d.iwise %>%
-  mutate(
-    # Categorical predictors: labelled factors. The FIRST level becomes the
-    # reference category the coefficients are compared against - choose it
-    # deliberately rather than accepting R's alphabetical default.
-    female         = factor(female, levels = c(0, 1),
-                            labels = c("Male", "Female")),
-    urban_imp      = factor(urban_imp, levels = c(0, 1),
-                            labels = c("Rural", "Peri-urban/urban")),
-    age_gp_profile = factor(age_gp_profile, levels = 0:3,
-                            labels = c("15-24", "25-34", "35-49", "50+")),
-    maritalstatus  = factor(maritalstatus, levels = 0:2,
-                            labels = c("Single", "Married/partnered",
-                                       "Sep/div/widowed")),
-    employment     = factor(employment, levels = 0:3,
-                            labels = c("Employed", "Underemployed",
-                                       "Unemployed", "Out of workforce")),
-    education      = factor(education, levels = 0:2,
-                            labels = c("Elementary", "Secondary", "College")),
-
-    across(all_of(v.continuous), as.numeric)
-  )
-
-# 1c. Confirm the recode did what you expect.
-str(d.iwise %>% select(any_of(c(v.outcomes, v.continuous, v.categorical))))
-
-
-# --- Financial Life Index Recalculation --------------------------------------
+# --- SETUP: Financial Life Index Recalculation --------------------------------------
 # ---- STEP 1: RECODE EACH ITEM TO 0/1 ----------------------------------------
 # The positive answer is code 1 for ALL FOUR items. (Do not confuse these with
 # the food/shelter items WP40/WP43, where the positive answer is "No" = 2.)
@@ -250,21 +156,109 @@ d.iwise <- d.iwise %>%
   )
 
 
+
+# ---- 1. LOAD DATA AND DEFINE VARIABLE GROUPS --------------------------------
+# Work on a copy so the raw object stays clean and you can always restart.
+
+v.outcomes    <- c("FLI_3item", "INCOME_5")
+v.main        <- "iwisescore"      # main predictor, 0-36
+v.ctrl        <- "iwise4"          # alternative 4-item version, 0-12
+
+# The WGI come in two suffix families, one row per country-year:
+#   _est = governance estimate, standard normal units, approx. -2.5 to 2.5
+#   _sc  = the same estimate mapped onto a 0-100 scale
+# They are transformations of each other, so NEVER use both for the same
+# dimension in one model - that is perfect collinearity.
+v.wgi.est <- c("wgi_va_est", "wgi_pv_est", "wgi_ge_est",
+               "wgi_rq_est", "wgi_rl_est", "wgi_cc_est")
+v.wgi.sc  <- c("wgi_va_sc",  "wgi_pv_sc",  "wgi_ge_sc",
+               "wgi_rq_sc",  "wgi_rl_sc",  "wgi_cc_sc")
+
+v.wgi <- v.wgi.sc   # preference
+
+v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi)
+v.categorical <- c("female", "urban_imp", "age_gp_profile",
+                   "maritalstatus", "employment", "education")
+# The other Gallup indices are currently NOT used as predictors. They are missing
+# for 30-73% of respondents (INDEX_YD 70-73% [excluded], INDEX_CA 40-47%, INDEX_PH 29-31%;
+# INDEX_FS is complete), so including them would cut the analytic sample to
+# roughly a quarter. Kept here only for the correlation matrix in Check 7.
+v.indices     <- c("INDEX_PH", "INDEX_FS", "INDEX_CA")
+v.cluster     <- "iso3c"
+
+# NOTE: the per-model variable lists (v.model.fl, v.model.inc) are defined
+# AFTER the split below, once the derived variables exist.
+
+
+# =============================================================================
+# CHECK 1: VARIABLE TYPES AND LEVEL ORDERING
+# -----------------------------------------------------------------------------
+# WHY: the model must know the outcome is ORDERED. A plain factor either errors
+# or discards the ordering. Levels sorted alphabetically ("0","100","16.67")
+# produce a model that runs fine and is completely wrong, with no warning.
+# =============================================================================
+
+# 1a. What does R currently think these variables are?
+class(d.iwise$FLI_3item)      # good
+class(d.iwise$INCOME_5)
+levels(d.iwise$FLI_3item)     # good
+levels(d.iwise$INCOME_5)
+
+# 1b. Recode. Safe to run even if already correct - it is idempotent.
+#     as.character() -> the labels; as.numeric() -> real numbers;
+#     factor() on a NUMERIC vector sorts levels numerically, which removes the
+#     alphabetical hazard entirely.
+d.iwise <- d.iwise %>%
+  mutate(
+    # Categorical predictors: labelled factors. The FIRST level becomes the
+    # reference category the coefficients are compared against - choose it
+    # deliberately rather than accepting R's alphabetical default.
+    female         = factor(female, levels = c(0, 1),
+                            labels = c("Male", "Female")),
+    urban_imp      = factor(urban_imp, levels = c(0, 1),
+                            labels = c("Rural", "Peri-urban/urban")),
+    age_gp_profile = factor(age_gp_profile, levels = 0:3,
+                            labels = c("15-24", "25-34", "35-49", "50+")),
+    maritalstatus  = factor(maritalstatus, levels = 0:2,
+                            labels = c("Single", "Married/partnered",
+                                       "Sep/div/widowed")),
+    employment     = factor(employment, levels = 0:3,
+                            labels = c("Employed", "Underemployed",
+                                       "Unemployed", "Out of workforce")),
+    education      = factor(education, levels = 0:2,
+                            labels = c("Elementary", "Secondary", "College")),
+
+    across(all_of(v.continuous), as.numeric)
+  )
+
+# 1c. Confirm the recode did what you expect.
+str(d.iwise %>% select(any_of(c(v.outcomes, v.continuous, v.categorical))))
+
+
 # ---- SETUP: DERIVED VARIABLES FIRST -----------------------------------------
 # IMPORTANT: create every derived variable on d.iwise BEFORE splitting.
 # Anything you mutate afterwards will not propagate into d.fl / d.inc.
+#
+# OUTCOME NOTE: the FLI used from here on is FLI_3item, your own index built
+# from WP2319, WP30 and WP31 (recoding above, validated at agree = 1.00 against
+# Gallup's version). WP88 is excluded because it was not administered to 38,704
+# respondents, which forced Gallup's index onto two different scales - a
+# three-item denominator for some respondents and a two-item denominator for
+# others. That is what produced levels 25 and 75.
+#
+# FLI_3item has a FIXED denominator, so every respondent is measured the same
+# way. It has 5 levels (0, 25, 50, 75, 100) instead of 9, at no loss of sample.
+# Gallup's original INDEX_FL_ord is retained for the robustness check in 3c.
 
 v.fli.items <- c("WP2319", "WP30", "WP31", "WP88")
 
-
 d.iwise <- d.iwise %>%
   mutate(
-    # How many FLI items did each respondent answer? Gallup computes the index
-    # from 3 or 4 items; nobody in this file answered fewer than 2, and the
-    # 2-item group has no index at all. Kept as a flag so you can run the
-    # 3-item vs 4-item sensitivity check in Check 3 without refiltering.
+    # How many FLI items did each respondent answer? With FLI_3item this no
+    # longer affects the outcome scale - it only flags WHO had WP88 fielded,
+    # which matters for the sample-composition checks in 3b.
     n_fli_answered = rowSums(!is.na(across(all_of(v.fli.items)))),
-    fli_4item      = n_fli_answered == 4,
+    has_wp88       = !is.na(WP88),
 
     # gdp_pc_ppp is income-like and right-skewed; log makes the coefficient
     # read as "per 1% change in GDP" and stops extreme values dominating.
@@ -282,19 +276,20 @@ d.iwise <- d.iwise %>%
            .names = "{.col}_num")
   )
 
-# not forget ethiopia
+# not forget ethiopia income classification
 d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
+
 
 # ---- SPLIT INTO TWO ANALYTIC SAMPLES ----------------------------------------
 # Each outcome gets its own frame. This is the point: a respondent missing
 # INCOME_5 should still count towards the FLI model, and vice versa.
 
-# FLI sample: everyone with a computed index (3-item and 4-item responders).
+# FLI sample: everyone with a computed FLI_3item score.
 d.fl <- d.iwise %>%
-  drop_na(INDEX_FL_ord) %>%
-  mutate(INDEX_FL_ord = droplevels(INDEX_FL_ord))
-# droplevels() is a safety net only - no level should be empty here. It matters
-# if you ever restrict the sample further, since polr() would otherwise try to
+  drop_na(FLI_3item) %>%
+  mutate(FLI_3item = droplevels(FLI_3item))
+# droplevels() is a safety net - no level should be empty here. It matters if
+# you ever restrict the sample further, since polr() would otherwise try to
 # estimate cut-points for categories containing nobody.
 
 # Income sample.
@@ -309,20 +304,22 @@ cat("FLI sample:   ", nrow(d.fl),
 cat("Income sample:", nrow(d.inc),
     sprintf("(%.1f%% of full)\n", 100 * nrow(d.inc) / nrow(d.iwise)))
 
-cat("\nFLI outcome levels after droplevels():\n")
-print(levels(d.fl$INDEX_FL_ord))
-cat("Income outcome levels:\n")
-print(levels(d.inc$INCOME_5))
+cat("\nFLI_3item levels:\n"); print(levels(d.fl$FLI_3item))
+cat("Income outcome levels:\n"); print(levels(d.inc$INCOME_5))
+
+# Confirm the fix worked: FLI_3item should cover exactly the same respondents
+# as Gallup's index, with no one gained or lost.
+cat("\nGallup index vs FLI_3item coverage:\n")
+print(table(gallup = !is.na(d.iwise$INDEX_FL_ord),
+            fli3   = !is.na(d.iwise$FLI_3item))) #correct
 
 
 # ---- VARIABLE LISTS PER MODEL -----------------------------------------------
-# The FLI list includes the four items so partial responders are flagged as
-# incomplete. (Redundant now that d.fl already filters on them, but it keeps
-# the definition explicit and lets the diagnostics below report on them.)
+# The four FLI items are deliberately NOT in these lists - FLI_3item already
+# encodes its own eligibility rule, and adding the items would drop everyone
+# without WP88 for no reason.
 
-# NOTE: the four FLI items are deliberately NOT in this list. Including them
-# would drop 3-item responders, which is the choice we are not making.
-v.model.fl  <- c("INDEX_FL_ord", v.main, "hhsize", "log_gdp", v.wgi,
+v.model.fl  <- c("FLI_3item", v.main, "hhsize", "log_gdp", v.wgi,
                  v.categorical, v.cluster)
 v.model.inc <- c("INCOME_5", v.main, "hhsize", "log_gdp", v.wgi,
                  v.categorical, v.cluster)
@@ -335,12 +332,12 @@ v.model.inc <- c("INCOME_5", v.main, "hhsize", "log_gdp", v.wgi,
 # harmless only if the deleted rows are a random subset. If they differ
 # systematically from the rows you keep, every coefficient is biased.
 #
-# NOTE: these figures now describe your ACTUAL analytic samples, so these are
-# the numbers to report in the paper.
+# NOTE: these figures describe the ACTUAL analytic samples, so these are the
+# numbers to report in the paper.
 # =============================================================================
 
 # 2a. Missingness per variable, within each analytic sample.
-cat("\n=== FLI SAMPLE ===\n") #divide by total (79804)
+cat("\n=== FLI SAMPLE ===\n")
 d.fl %>%
   select(any_of(v.model.fl)) %>%
   naniar::miss_var_summary() %>%
@@ -373,7 +370,7 @@ cat(sprintf("Income: %d of %d retained (%.1f%% lost to covariates)\n",
 #     not neutral, and you say so in the limitations.
 bind_rows(
   d.fl %>% group_by(complete = cc) %>%
-    summarise(model = "INDEX_FL_ord", n = n(),
+    summarise(model = "FLI_3item", n = n(),
               across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp")),
                      ~round(mean(.x, na.rm = TRUE), 2)), .groups = "drop"),
   d.inc %>% group_by(complete = cc) %>%
@@ -405,7 +402,6 @@ cat("Countries in income model:",
     d.inc %>% filter(cc) %>% distinct(across(all_of(v.cluster))) %>% nrow(), "\n")
 
 # 2f. For countries losing most of their cases, WHICH variable is responsible?
-#     The answer determines what to do:
 #       missing OUTCOME           -> accept, nothing to model
 #       missing COUNTRY covariate -> fix the merge, or drop that covariate
 #       missing INDIVIDUAL covar. -> consider multiple imputation
@@ -432,16 +428,17 @@ diagnose_drops(d.inc, "cc", v.model.inc)
 # Countries entirely absent from a sample never appear above, because they
 # have no rows left to summarise. Find them against the full data:
 cat("\n--- Countries absent from the FLI sample entirely ---\n")
-setdiff(unique(d.iwise[[v.cluster]]), unique(d.fl[[v.cluster]]))
+print(setdiff(unique(d.iwise[[v.cluster]]), unique(d.fl[[v.cluster]])))
 cat("--- Countries absent from the income sample entirely ---\n")
-setdiff(unique(d.iwise[[v.cluster]]), unique(d.inc[[v.cluster]]))
+print(setdiff(unique(d.iwise[[v.cluster]]), unique(d.inc[[v.cluster]])))
 
 # For those, check what is missing in the FULL data:
 d.iwise %>%
   filter(.data[[v.cluster]] %in%
            setdiff(unique(d.iwise[[v.cluster]]), unique(d.fl[[v.cluster]]))) %>%
   group_by(across(all_of(v.cluster))) %>%
-  summarise(across(any_of(v.model.fl), ~round(100 * mean(is.na(.x)), 1)),
+  summarise(across(any_of(c(v.model.fl, "WP2319", "WP30", "WP31")),
+                   ~round(100 * mean(is.na(.x)), 1)),
             .groups = "drop") %>%
   print(width = Inf)
 
@@ -449,61 +446,71 @@ d.iwise %>%
 # =============================================================================
 # CHECK 3: OUTCOME DISTRIBUTION AND SPARSE CATEGORIES
 # -----------------------------------------------------------------------------
-# WHY: one cut-point is estimated per threshold (6 for a 7-level outcome, 4 for
-# a 5-level one), each from respondents near that threshold. A level with very
-# few cases gives an unstable cut-point.
+# WHY: one cut-point is estimated per threshold - FOUR for the 5-level
+# FLI_3item, four for INCOME_5 - each from respondents near that threshold. A
+# level with very few cases gives an unstable cut-point.
 #
 # JUDGE ON COUNTS, NOT PERCENTAGES. With N in the tens of thousands, a level
-# holding 3% of the sample still has well over a thousand respondents, which
-# is ample. There is no canonical minimum percentage in the literature.
+# holding 3% of the sample still has well over a thousand respondents, which is
+# ample. There is no canonical minimum percentage in the literature.
 #
-# AND NOTE: because the index is a deterministic function of four items, a
+# AND NOTE: because the index is a deterministic function of three items, a
 # level's frequency reflects how many response patterns map onto it - not
 # sampling sparsity. A structurally rare score is not a data problem.
 # =============================================================================
 
-cat("\n--- INDEX_FL_ord (all respondents with a computed index) ---\n")
-print(table(d.fl$INDEX_FL_ord, useNA = "ifany"))
-print(round(100 * prop.table(table(d.fl$INDEX_FL_ord)), 1))
+cat("\n--- FLI_3item ---\n")
+print(table(d.fl$FLI_3item, useNA = "ifany"))
+print(round(100 * prop.table(table(d.fl$FLI_3item)), 1))
 
 cat("\n--- INCOME_5 ---\n")
 print(table(d.inc$INCOME_5, useNA = "ifany"))
 print(round(100 * prop.table(table(d.inc$INCOME_5)), 1))
 
-cat("\nSmallest FLI level:   ", min(table(d.fl$INDEX_FL_ord)), "cases\n")
+cat("\nSmallest FLI level:   ", min(table(d.fl$FLI_3item)), "cases\n")
 cat("Smallest income level:", min(table(d.inc$INCOME_5)), "cases\n")
 # In the low thousands = fine. In the low dozens = consider collapsing.
 
 # Visual.
 d.fl %>%
-  count(INDEX_FL_ord) %>%
-  ggplot(aes(INDEX_FL_ord, n)) +
-  geom_col() +
+  count(FLI_3item) %>%
+  ggplot(aes(FLI_3item, n)) +
+  geom_col(fill = "#3D4222") +
   geom_text(aes(label = n), vjust = -0.4, size = 3) +
-  labs(title = "INDEX_FL_ord, all respondents with a computed index",
+  labs(title = "Financial Life Index (3-item version)",
        subtitle = paste0("N = ", nrow(d.fl),
-                         "; levels 25 and 75 arise only from 3-item responses"),
+                         "; WP2319 + WP30 + WP31, uniform construction"),
        x = "Financial Life Index", y = "n") +
   theme_minimal()
 
-# 3b. SENSITIVITY: are 3-item and 4-item responders measured comparably?
+
+# 3b. SENSITIVITY: does WP88 availability still matter?
 # -----------------------------------------------------------------------------
-# This is the check that justifies pooling them. Levels 25 and 75 exist ONLY in
-# the 3-item group, so the two groups do not span the same set of possible
-# scores. Three things to look at:
+# The MEASUREMENT problem is solved - every respondent now sits on the same
+# 5-level scale regardless of whether WP88 was fielded. What remains is a
+# SAMPLE COMPOSITION question: the countries where WP88 was not administered
+# may differ from the rest, which matters for the 3c robustness check.
 
-# (i) Which levels each group can actually reach.
-cat("\n--- INDEX_FL_ord by number of items answered ---\n")
-print(table(d.fl$INDEX_FL_ord, d.fl$n_fli_answered))
+# (i) Both groups should now reach all five levels. This is the demonstration
+#     that the recoding fixed the scale problem.
+cat("\n--- FLI_3item by WP88 availability ---\n")
+print(table(d.fl$FLI_3item, has_wp88 = d.fl$has_wp88)) #correct
 
-# (ii) Do the two groups differ on your key variables? If they look alike,
-#      pooling is defensible and you say so in a footnote. If they differ,
-#      report it as a limitation and run the 4-item-only model as a robustness
-#      check (see 3c).
+# (ii) How the new index maps onto Gallup's. Shows exactly what dropping WP88
+#      does to each respondent's score.
+cat("\n--- FLI_3item (rows) vs Gallup INDEX_FL_ord (cols) ---\n")
+print(table(d.fl$FLI_3item, d.fl$INDEX_FL_ord))
+
+cat("\nCorrelation between the two versions: ",
+    round(cor(as.numeric(as.character(d.fl$FLI_3item)),
+              as.numeric(as.character(d.fl$INDEX_FL_ord)),
+              use = "pairwise.complete.obs"), 3), "\n")
+
+# (iii) Do respondents with and without WP88 differ on your key variables?
 d.fl %>%
-  group_by(fli_4item) %>%
+  group_by(has_wp88) %>%
   summarise(n = n(),
-            mean_index = round(mean(as.numeric(as.character(INDEX_FL_ord))), 2),
+            mean_index = round(mean(as.numeric(as.character(FLI_3item))), 2),
             across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp")),
                    ~round(mean(.x, na.rm = TRUE), 2)),
             pct_female = round(100 * mean(female == "Female", na.rm = TRUE), 1),
@@ -511,41 +518,28 @@ d.fl %>%
                                           na.rm = TRUE), 1),
             .groups = "drop")
 
-# (iii) Is the 3-item group concentrated in particular countries? If one item
-#       was not fielded in certain surveys, this is a DESIGN feature, not
-#       respondent refusal - which strengthens the case for pooling but also
-#       means the 25/75 levels are country-specific artefacts.
+# (iv) Is WP88 non-administration a COUNTRY-level pattern? Countries at 100%
+#      confirm it was a fielding decision, not respondent refusal - which is
+#      what justifies dropping the item rather than the respondents.
 d.fl %>%
   group_by(across(all_of(v.cluster))) %>%
-  summarise(n = n(), pct_3item = round(100 * mean(!fli_4item), 1),
+  summarise(n = n(), pct_no_wp88 = round(100 * mean(!has_wp88), 1),
             .groups = "drop") %>%
-  arrange(desc(pct_3item)) %>%
+  arrange(desc(pct_no_wp88)) %>%
   print(n = Inf)
 
-# (iv) Among 3-item responders, WHICH item is missing? If it is nearly always
-#      the same one, that confirms a design/fielding explanation.
-d.fl %>%
-  filter(!fli_4item) %>%
-  summarise(across(all_of(v.fli.items), ~sum(is.na(.x)))) %>%
-  pivot_longer(everything(), names_to = "item", values_to = "n_missing") %>%
-  arrange(desc(n_missing))
 
-# 3c. ROBUSTNESS SAMPLE. Keep this defined so you can refit the final model on
-#     4-item responders only and confirm your conclusions do not depend on the
-#     pooling decision. Note it has 7 levels, not 9.
-d.fl.4item <- d.fl %>%
-  filter(fli_4item) %>%
+# 3c. ROBUSTNESS SAMPLE. Refit the final model using Gallup's own 4-item index
+#     on the subsample where WP88 was fielded, to confirm your conclusions do
+#     not depend on the decision to drop it. Note this has 7 levels, and covers
+#     only the countries where WP88 was administered.
+d.fl.gallup <- d.fl %>%
+  filter(has_wp88) %>%
   mutate(INDEX_FL_ord = droplevels(INDEX_FL_ord))
 
-cat("\nRobustness sample (4-item only): N =", nrow(d.fl.4item),
-    "| levels:", paste(levels(d.fl.4item$INDEX_FL_ord), collapse = ", "), "\n")
-
-
-# ONLY IF a level turns out to be genuinely tiny. Collapse on substantive
-# grounds and report that you did it.
-# d.fl <- d.fl %>%
-#   mutate(INDEX_FL_c = fct_collapse(INDEX_FL_ord,
-#                                    "66.67+" = c("66.67", "83.33")))
+cat("\nRobustness sample (Gallup 4-item, WP88 countries only): N =",
+    nrow(d.fl.gallup),
+    "| levels:", paste(levels(d.fl.gallup$INDEX_FL_ord), collapse = ", "), "\n")
 
 
 # =============================================================================
@@ -554,8 +548,6 @@ cat("\nRobustness sample (4-item only): N =", nrow(d.fl.4item),
 # WHY: a factor level with a handful of respondents gives a coefficient too
 # imprecise to interpret. Implausible values are usually data errors. Heavy
 # skew distorts estimates.
-#
-# Run on each analytic sample - the samples differ, so the distributions can too.
 # =============================================================================
 
 # 4a. Categorical predictors.
@@ -585,7 +577,7 @@ d.fl %>%
   select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp"))) %>%
   pivot_longer(everything()) %>%
   ggplot(aes(value)) +
-  geom_histogram(bins = 40) +
+  geom_histogram(bins = 40, fill = "#3D4222") +
   facet_wrap(~name, scales = "free") +
   labs(title = "Continuous predictors, FLI sample") +
   theme_minimal()
@@ -599,7 +591,6 @@ table(d.fl$iwise_cat, useNA = "ifany")
 # -----------------------------------------------------------------------------
 # WHY: empty cells (zero respondents in a predictor-level x outcome-level
 # combination) are the main cause of non-convergence and of separation.
-# Re-run now, because the outcome has 7 levels instead of 9.
 # =============================================================================
 
 crosstab_check <- function(data, outcome, vars) {
@@ -613,8 +604,8 @@ crosstab_check <- function(data, outcome, vars) {
   }
 }
 
-crosstab_check(d.fl,  "INDEX_FL_ord", v.categorical)
-crosstab_check(d.inc, "INCOME_5",     v.categorical)
+crosstab_check(d.fl,  "FLI_3item", v.categorical)
+crosstab_check(d.inc, "INCOME_5",  v.categorical)
 # IF EMPTY CELLS: collapse the offending predictor category.
 
 
@@ -624,14 +615,13 @@ crosstab_check(d.inc, "INCOME_5",     v.categorical)
 # WHY: need enough cases in the SMALLEST outcome category to estimate all
 # coefficients reliably. Rule of thumb: at least 10 per parameter.
 # NOTE: a k-level factor costs k-1 parameters, not 1.
-# Both N and the smallest category have changed, so this must be re-run.
 # =============================================================================
 
 rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
                  "maritalstatus + hhsize + employment + education")
 
 # Contextual version. ONE governance term only - see Check 7.
-# NB: this must match whichever WGI family v.wgi points at (line ~87).
+# NB: this must match whichever WGI family v.wgi points at.
 rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi[6])
 
 epv_check <- function(data, outcome, rhs) {
@@ -643,8 +633,8 @@ epv_check <- function(data, outcome, rhs) {
               ifelse(min(tb) / n.p < 10, "<- BELOW 10", "")))
 }
 
-epv_check(d.fl,  "INDEX_FL_ord", rhs_ctx)
-epv_check(d.inc, "INCOME_5",     rhs_ctx)
+epv_check(d.fl,  "FLI_3item", rhs_ctx)
+epv_check(d.inc, "INCOME_5",  rhs_ctx)
 
 
 # =============================================================================
@@ -655,8 +645,7 @@ epv_check(d.inc, "INCOME_5",     rhs_ctx)
 # that flip when you add or remove a variable.
 #
 # This is a property of the PREDICTORS ONLY. The outcome is irrelevant, which
-# is why it can be checked before fitting. Run it on the FLI sample, since
-# that is the smaller and more restricted of the two.
+# is why it can be checked before fitting.
 # =============================================================================
 
 # 7a. Correlation matrix. Catches PAIRWISE overlap only.
@@ -666,8 +655,7 @@ d.fl %>%
   cor(use = "pairwise.complete.obs") %>%
   round(2) %>%
   print()
-# LOOKING FOR: |r| above ~0.8. Expect it among the WGI indicators, and
-# possibly between INDEX_YD and education (flagged in your codebook).
+# LOOKING FOR: |r| above ~0.8. Expect it among the WGI indicators.
 
 # 7b. VIF. Catches overlap involving THREE OR MORE variables, which pairwise
 #     correlation misses. VIF = 4 means this standard error is twice as wide
@@ -678,33 +666,6 @@ m.vifprobe <- lm(as.formula(paste("rnorm(nrow(d.fl)) ~", rhs_ctx)), data = d.fl)
 car::vif(m.vifprobe)
 # For FACTORS this returns GVIF. Read GVIF^(1/(2*Df)) and SQUARE it before
 # comparing to the usual thresholds of 5 or 10.
-
-# 7c. All six WGI indicators together, to see how bad it is.
-m.vifwgi <- lm(as.formula(paste("rnorm(nrow(d.fl)) ~",
-                                paste(v.wgi, collapse = " + "))), data = d.fl)
-car::vif(m.vifwgi)
-
-# 7d. IF COLLINEAR: pick ONE on theoretical grounds, or reduce all six to a
-#     single component. Run the PCA at COUNTRY level, not respondent level, or
-#     the largest country dominates the components.
-d.wgi.country <- d.iwise %>%
-  select(all_of(c(v.cluster, v.wgi))) %>%
-  distinct() %>%
-  drop_na()
-
-pca.wgi <- prcomp(d.wgi.country %>% select(all_of(v.wgi)), scale. = TRUE)
-summary(pca.wgi)        # PC1 usually explains 80-90% of WGI variance
-pca.wgi$rotation[, 1]   # loadings: all six should point the same direction
-
-# If you use it, merge PC1 onto ALL THREE frames so they stay consistent.
-d.pc1 <- d.wgi.country %>%
-  mutate(wgi_pc1 = pca.wgi$x[, 1]) %>%
-  select(all_of(v.cluster), wgi_pc1)
-
-d.iwise <- left_join(d.iwise, d.pc1, by = v.cluster)
-d.fl    <- left_join(d.fl,    d.pc1, by = v.cluster)
-d.inc   <- left_join(d.inc,   d.pc1, by = v.cluster)
-
 
 # =============================================================================
 # CHECK 8: CLUSTERING / NON-INDEPENDENCE
@@ -727,11 +688,12 @@ d.fl %>%
   summarise(n_countries = n(), min_n = min(n),
             median_n = median(n), max_n = max(n))
 # Fewer than ~40 clusters means you need a small-sample correction (CR2) later.
+# 74 countries, 500 to 3,503 respondents each
 
 # 8b. ICC: what share of outcome variance sits BETWEEN countries?
 m.icc.fl <- lme4::lmer(
-  as.numeric(as.character(INDEX_FL_ord)) ~ 1 + (1 | country), data = d.fl)
-cat("\nICC, INDEX_FL_ord:\n"); print(performance::icc(m.icc.fl))
+  as.numeric(as.character(FLI_3item)) ~ 1 + (1 | country), data = d.fl)
+cat("\nICC, FLI_3item:\n"); print(performance::icc(m.icc.fl))
 
 m.icc.inc <- lme4::lmer(
   as.numeric(as.character(INCOME_5)) ~ 1 + (1 | country), data = d.inc)
@@ -739,18 +701,18 @@ cat("\nICC, INCOME_5:\n"); print(performance::icc(m.icc.inc))
 
 # LOOKING FOR: above ~0.05 means clustering is NOT ignorable.
 # EXPECT INCOME_5 TO BE NEAR ZERO. Quintiles are constructed WITHIN country,
-# so every country has ~20% in each - there is almost nothing between
-# countries to explain, and country-level covariates cannot explain it.
-# That is a substantive problem with the income model, not a bug.
+# so every country has ~20% in each - there is almost nothing between countries
+# to explain, and country-level covariates cannot explain it. That is a
+# substantive problem with the income model, not a bug.
 
 # 8c. Visual: how much do country means differ?
 d.fl %>%
   group_by(across(all_of(v.cluster))) %>%
-  summarise(mean_fl = mean(as.numeric(as.character(INDEX_FL_ord)), na.rm = TRUE),
+  summarise(mean_fl = mean(as.numeric(as.character(FLI_3item)), na.rm = TRUE),
             .groups = "drop") %>%
   ggplot(aes(x = reorder(.data[[v.cluster]], mean_fl), y = mean_fl)) +
   geom_point() + coord_flip() +
-  labs(title = "Country mean, INDEX_FL_ord", x = NULL, y = "Mean") +
+  labs(title = "Country mean, FLI_3item", x = NULL, y = "Mean") +
   theme_minimal(base_size = 7)
 
 # YOUR FIX (applied when you fit, not here):
@@ -767,8 +729,8 @@ d.fl %>%
 # outcome. Symptoms: coefficients above 15, standard errors in the thousands,
 # convergence warnings. A DATA problem - more iterations never fix it.
 #
-# The ordinal model works by cutting the outcome at each threshold, so each
-# cut can be tested in advance. 7 levels = 6 cuts (was 8).
+# The ordinal model works by cutting the outcome at each threshold, so each cut
+# can be tested in advance. 5 levels = 4 cuts (was 8 with the 9-level version).
 # =============================================================================
 
 check_separation <- function(data, outcome, rhs) {
@@ -787,39 +749,60 @@ check_separation <- function(data, outcome, rhs) {
   }
 }
 
-check_separation(d.fl,  "INDEX_FL_ord", rhs)
-check_separation(d.inc, "INCOME_5",     rhs)
+check_separation(d.fl,  "FLI_3item", rhs)
+check_separation(d.inc, "INCOME_5",  rhs)
 
 # IF DETECTED: collapse the offending category, drop the variable, or plan on
 # Firth penalised likelihood (brglm2::brglmFit) at the modelling stage.
 
-saveRDS(list(d.iwise = d.iwise, d.fl = d.fl, d.inc = d.inc),
+
+# =============================================================================
+# SAVE FOR THE MODELLING SCRIPT
+# -----------------------------------------------------------------------------
+# One saveRDS only. Saving the frames AND the variable definitions together
+# keeps them in sync - you cannot accidentally load an old d.fl with a new rhs.
+# Re-run this script whenever you change anything upstream, or the modelling
+# script will silently analyse stale data.
+# =============================================================================
+
+saveRDS(list(d.iwise      = d.iwise,
+             d.fl         = d.fl,
+             d.inc        = d.inc,
+             d.fl.gallup  = d.fl.gallup,   # robustness sample, Gallup 4-item
+             rhs          = rhs,
+             rhs_ctx      = rhs_ctx,
+             v.main       = v.main,
+             v.categorical = v.categorical,
+             v.continuous = v.continuous,
+             v.wgi        = v.wgi,
+             v.indices    = v.indices,
+             v.cluster    = v.cluster,
+             v.model.fl   = v.model.fl,
+             v.model.inc  = v.model.inc),
         "data_prepared.rds")
 
-saveRDS(list(d.iwise = d.iwise, d.fl = d.fl, d.inc = d.inc,
-             rhs = rhs, rhs_ctx = rhs_ctx,
-             v.categorical = v.categorical, v.wgi = v.wgi,
-             v.cluster = v.cluster),
-        "data_prepared.rds")
-
-
+cat("\nSaved data_prepared.rds\n")
+cat("Load in the modelling script with:\n")
+cat('  dat <- readRDS("data_prepared.rds"); list2env(dat, envir = .GlobalEnv)\n')
 
 
 # =============================================================================
-# WHAT COMES NEXT
+# WHAT COMES NEXT - checks that require a FITTED model
 # =============================================================================
 
- # 10. PROPORTIONAL ODDS - the assumption specific to this model. Tests whether
-# each predictor's effect is the same across every cut of the outcome. It
-# is frequently violated. Brant test, ordinal::nominal_test(), and a plot
-# of coefficients across cuts. With your N the formal tests reject on
-# trivial departures, so the plot is the most honest of the three.
+# 10. PROPORTIONAL ODDS - the assumption specific to this model. Tests whether
+#     each predictor's effect is the same across every cut of the outcome. It
+#     is frequently violated. Brant test, ordinal::nominal_test(), and a plot
+#     of coefficients across cuts. With your N the formal tests reject on
+#     trivial departures, so the plot is the most honest of the three.
 
- # 11. LINEARITY OF THE LOGIT - whether continuous predictors relate linearly
-# to the log-odds. That scale only exists once a model defines it, and the
-# relationship is PARTIAL, so it depends on the other covariates.
+# 11. LINEARITY OF THE LOGIT - whether continuous predictors relate linearly to
+#     the log-odds. That scale only exists once a model defines it, and the
+#     relationship is PARTIAL, so it depends on the other covariates.
+#     iwisescore is zero-inflated (median 3, mean 6.6), so expect this to flag;
+#     iwise_cat is the ready-made alternative.
 
-# 12. INFLUENTIAL OBSERVATIONS - Cook's distance, standardised residuals, and
-# a sensitivity refit without the most influential 1%.
+# 12. INFLUENTIAL OBSERVATIONS - Cook's distance, standardised residuals, and a
+#     sensitivity refit without the most influential 1%.
 
-# 13. GOODNESS OF FIT - Lipsitz and Pulkstenis-Robinson tests.    
+# 13. GOODNESS OF FIT - Lipsitz and Pulkstenis-Robinson tests.  
