@@ -3,12 +3,15 @@
 # Dataset: iwise_analysis
 # Outcomes: INDEX_FL_ord (Financial Life Index), INCOME_5 (Income Quintiles)
 # Main predictor: iwisescore (Water Insecurity Experiences, 0-36)
+# JMP covariate: bas_rate_pp (recent change in at-least-basic water, pp/year)
 #
 # WHAT THIS SCRIPT DOES
 # ---------------------
 # Nine checks, in order, on the DATA. It STOPS BEFORE THE MODEL IS FITTED.
 # The four checks that require a fitted model are listed at the end.
 # See premodel_checks_explained.md for the reasoning behind each one.
+#
+# CHANGES FOR JMP: every line added or edited for bas_rate_pp is tagged # [JMP]
 #
 # STRUCTURE
 # ---------
@@ -176,7 +179,11 @@ v.wgi.sc  <- c("wgi_va_sc",  "wgi_pv_sc",  "wgi_ge_sc",
 
 v.wgi <- v.wgi.sc   # preference
 
-v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi)
+# [JMP] JMP covariate used in the models. Country-year level, like log_gdp and
+# the WGI. Change of at-least-basic water service, percentage points per year.
+v.jmp <- "bas_rate_pp"
+
+v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi, v.jmp)  # [JMP]
 v.categorical <- c("female", "urban_imp", "age_gp_profile",
                    "maritalstatus", "employment", "education")
 # The other Gallup indices are currently NOT used as predictors. They are missing
@@ -228,7 +235,7 @@ d.iwise <- d.iwise %>%
     education      = factor(education, levels = 0:2,
                             labels = c("Elementary", "Secondary", "College")),
 
-    across(all_of(v.continuous), as.numeric)
+    across(all_of(v.continuous), as.numeric)   # [JMP] now includes bas_rate_pp
   )
 
 # 1c. Confirm the recode did what you expect.
@@ -280,6 +287,35 @@ d.iwise <- d.iwise %>%
 d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
 
 
+
+# ---- COUNTRY-YEAR COLLINEARITY: IWISE vs JMP -------------------------------
+# JMP varies only between country-years, so the relevant correlation is at
+# that level. At respondent level it would look artificially small.
+# [JMP] Renamed from v.jmp to v.jmp.all, so it no longer overwrites the model
+# covariate list defined in Section 1.
+
+v.jmp.all <- c("bas_rate_pp", "bas_level", "sm_level",
+               "prem_level", "avail_level", "qual_level")
+
+cy <- d.iwise %>%
+  group_by(country_year) %>%
+  summarise(
+    iwise_mean = weighted.mean(iwisescore,  wgt2, na.rm = TRUE),
+    iwise_mh   = weighted.mean(iwise12_imp, wgt2, na.rm = TRUE),  # % mod-to-high WI
+    across(all_of(c(v.jmp.all, "log_gdp")), first)
+  )
+
+cy %>%
+  select(-country_year) %>%
+  cor(use = "pairwise.complete.obs", method = "spearman") %>%
+  round(2)
+# RESULT: bas_rate_pp x IWISE = 0.14. JMP levels -0.53 to -0.69 with IWISE and
+# 0.79-0.96 with each other, so use at most ONE JMP level in any model.
+
+
+
+
+
 # ---- SPLIT INTO TWO ANALYTIC SAMPLES ----------------------------------------
 # Each outcome gets its own frame. This is the point: a respondent missing
 # INCOME_5 should still count towards the FLI model, and vice versa.
@@ -318,10 +354,11 @@ print(table(gallup = !is.na(d.iwise$INDEX_FL_ord),
 # The four FLI items are deliberately NOT in these lists - FLI_3item already
 # encodes its own eligibility rule, and adding the items would drop everyone
 # without WP88 for no reason.
+# [JMP] v.jmp added, so every missing-data check in Check 2 now counts it.
 
-v.model.fl  <- c("FLI_3item", v.main, "hhsize", "log_gdp", v.wgi,
+v.model.fl  <- c("FLI_3item", v.main, "hhsize", "log_gdp", v.wgi, v.jmp,
                  v.categorical, v.cluster)
-v.model.inc <- c("INCOME_5", v.main, "hhsize", "log_gdp", v.wgi,
+v.model.inc <- c("INCOME_5", v.main, "hhsize", "log_gdp", v.wgi, v.jmp,
                  v.categorical, v.cluster)
 
 
@@ -334,6 +371,9 @@ v.model.inc <- c("INCOME_5", v.main, "hhsize", "log_gdp", v.wgi,
 #
 # NOTE: these figures describe the ACTUAL analytic samples, so these are the
 # numbers to report in the paper.
+#
+# [JMP] bas_rate_pp is country-level, so where it is missing it is missing for
+# a WHOLE country. Expect N to fall versus the pre-JMP run; 2e/2f show where.
 # =============================================================================
 
 # 2a. Missingness per variable, within each analytic sample.
@@ -371,11 +411,11 @@ cat(sprintf("Income: %d of %d retained (%.1f%% lost to covariates)\n",
 bind_rows(
   d.fl %>% group_by(complete = cc) %>%
     summarise(model = "FLI_3item", n = n(),
-              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp")),
+              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp)),  # [JMP]
                      ~round(mean(.x, na.rm = TRUE), 2)), .groups = "drop"),
   d.inc %>% group_by(complete = cc) %>%
     summarise(model = "INCOME_5", n = n(),
-              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp")),
+              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp)),  # [JMP]
                      ~round(mean(.x, na.rm = TRUE), 2)), .groups = "drop")
 ) %>% relocate(model) %>% print()
 
@@ -400,6 +440,16 @@ cat("\nCountries in FLI model:   ",
     d.fl %>% filter(cc) %>% distinct(across(all_of(v.cluster))) %>% nrow(), "\n")
 cat("Countries in income model:",
     d.inc %>% filter(cc) %>% distinct(across(all_of(v.cluster))) %>% nrow(), "\n")
+
+# [JMP] 2e-bis. Which countries have NO bas_rate_pp at all? These drop out of
+#     both models entirely once the JMP covariate is included.
+cat("\n--- Countries with no bas_rate_pp ---\n")
+d.iwise %>%
+  group_by(across(all_of(v.cluster))) %>%
+  summarise(pct_missing_jmp = round(100 * mean(is.na(.data[[v.jmp]])), 1),
+            .groups = "drop") %>%
+  filter(pct_missing_jmp > 0) %>%
+  print(n = Inf)
 
 # 2f. For countries losing most of their cases, WHICH variable is responsible?
 #       missing OUTCOME           -> accept, nothing to model
@@ -511,7 +561,7 @@ d.fl %>%
   group_by(has_wp88) %>%
   summarise(n = n(),
             mean_index = round(mean(as.numeric(as.character(FLI_3item))), 2),
-            across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp")),
+            across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp)),  # [JMP]
                    ~round(mean(.x, na.rm = TRUE), 2)),
             pct_female = round(100 * mean(female == "Female", na.rm = TRUE), 1),
             pct_urban  = round(100 * mean(urban_imp == "Peri-urban/urban",
@@ -558,7 +608,8 @@ for (v in v.categorical) {
 
 # 4b. Continuous predictors.
 d.fl %>%
-  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp", v.wgi))) %>%
+  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp", v.wgi,
+                  v.jmp))) %>%                                          # [JMP]
   summarise(across(everything(),
                    list(min  = ~min(.x, na.rm = TRUE),
                         med  = ~median(.x, na.rm = TRUE),
@@ -574,13 +625,24 @@ d.fl %>%
 
 # 4c. Histograms.
 d.fl %>%
-  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp"))) %>%
+  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp",
+                  v.jmp))) %>%                                          # [JMP]
   pivot_longer(everything()) %>%
   ggplot(aes(value)) +
   geom_histogram(bins = 40, fill = "#3D4222") +
   facet_wrap(~name, scales = "free") +
   labs(title = "Continuous predictors, FLI sample") +
   theme_minimal()
+
+# [JMP] 4c-bis. How much does bas_rate_pp actually vary? Country-level, so
+#     judge it across COUNTRY-YEARS, not respondents. If most values sit near
+#     zero, the covariate has little variation to explain anything with.
+cy %>%
+  summarise(n_country_years = sum(!is.na(bas_rate_pp)),
+            median   = median(bas_rate_pp, na.rm = TRUE),
+            iqr_lo   = quantile(bas_rate_pp, .25, na.rm = TRUE),
+            iqr_hi   = quantile(bas_rate_pp, .75, na.rm = TRUE),
+            pct_flat = round(100 * mean(abs(bas_rate_pp) < 0.05, na.rm = TRUE), 1))
 
 # 4d. How is iwisescore distributed across the standard bands?
 table(d.fl$iwise_cat, useNA = "ifany")
@@ -622,7 +684,8 @@ rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
 
 # Contextual version. ONE governance term only - see Check 7.
 # NB: this must match whichever WGI family v.wgi points at.
-rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi[6])
+# [JMP] bas_rate_pp added. Every check using rhs_ctx (6, 7b) now includes it.
+rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi[6], "+", v.jmp)
 
 epv_check <- function(data, outcome, rhs) {
   d.cc <- data %>% drop_na(all_of(c(outcome, all.vars(as.formula(paste("~", rhs))))))
@@ -646,11 +709,13 @@ epv_check(d.inc, "INCOME_5",  rhs_ctx)
 #
 # This is a property of the PREDICTORS ONLY. The outcome is irrelevant, which
 # is why it can be checked before fitting.
+#
+# [JMP] The country-year IWISE-vs-JMP matrix is in the setup section above.
 # =============================================================================
 
 # 7a. Correlation matrix. Catches PAIRWISE overlap only.
 d.fl %>%
-  select(any_of(c("iwisescore", "hhsize", "log_gdp", v.wgi,
+  select(any_of(c("iwisescore", "hhsize", "log_gdp", v.wgi, v.jmp,   # [JMP]
                   paste0(v.indices, "_num")))) %>%
   cor(use = "pairwise.complete.obs") %>%
   round(2) %>%
@@ -666,13 +731,16 @@ m.vifprobe <- lm(as.formula(paste("rnorm(nrow(d.fl)) ~", rhs_ctx)), data = d.fl)
 car::vif(m.vifprobe)
 # For FACTORS this returns GVIF. Read GVIF^(1/(2*Df)) and SQUARE it before
 # comparing to the usual thresholds of 5 or 10.
+# [JMP] Before JMP: log_gdp 2.00, wgi_cc_sc 1.73, iwisescore 1.09. Compare the
+# new values against these; expect log_gdp to rise a little (r = -0.53).
 
 # =============================================================================
 # CHECK 8: CLUSTERING / NON-INDEPENDENCE
 # -----------------------------------------------------------------------------
 # WHY: all regression assumes independent observations. Yours are nested in
-# countries, and log_gdp / wgi_* take ONE value per country. Ignoring this
-# makes standard errors far too small, so you find effects that are not there.
+# countries, and log_gdp / wgi_* / bas_rate_pp take ONE value per country-year.  # [JMP]
+# Ignoring this makes standard errors far too small, so you find effects that
+# are not there.
 #
 # The Moulton problem: tens of thousands of respondents, but only as many
 # independent observations of the country-level variables as you have
@@ -689,6 +757,9 @@ d.fl %>%
             median_n = median(n), max_n = max(n))
 # Fewer than ~40 clusters means you need a small-sample correction (CR2) later.
 # 74 countries, 500 to 3,503 respondents each
+# [JMP] Rerun on the complete-case sample to see how many survive with JMP:
+d.fl %>% filter(cc) %>% count(across(all_of(v.cluster))) %>%
+  summarise(n_countries_cc = n())
 
 # 8b. ICC: what share of outcome variance sits BETWEEN countries?
 m.icc.fl <- lme4::lmer(
@@ -731,6 +802,10 @@ d.fl %>%
 #
 # The ordinal model works by cutting the outcome at each threshold, so each cut
 # can be tested in advance. 5 levels = 4 cuts (was 8 with the 9-level version).
+#
+# [JMP] Unchanged: this check uses the individual-level rhs, so it does not
+# include log_gdp, the WGI or bas_rate_pp. Swap rhs for rhs_ctx below if you
+# want it on the full model.
 # =============================================================================
 
 check_separation <- function(data, outcome, rhs) {
@@ -770,11 +845,12 @@ saveRDS(list(d.iwise      = d.iwise,
              d.inc        = d.inc,
              d.fl.gallup  = d.fl.gallup,   # robustness sample, Gallup 4-item
              rhs          = rhs,
-             rhs_ctx      = rhs_ctx,
+             rhs_ctx      = rhs_ctx,       # [JMP] now includes bas_rate_pp
              v.main       = v.main,
              v.categorical = v.categorical,
              v.continuous = v.continuous,
              v.wgi        = v.wgi,
+             v.jmp        = v.jmp,         # [JMP]
              v.indices    = v.indices,
              v.cluster    = v.cluster,
              v.model.fl   = v.model.fl,
@@ -801,8 +877,12 @@ cat('  dat <- readRDS("data_prepared.rds"); list2env(dat, envir = .GlobalEnv)\n'
 #     relationship is PARTIAL, so it depends on the other covariates.
 #     iwisescore is zero-inflated (median 3, mean 6.6), so expect this to flag;
 #     iwise_cat is the ready-made alternative.
+#     [JMP] Test bas_rate_pp here too. It can be negative, so use splines
+#     rather than a log or Box-Tidwell term.
 
 # 12. INFLUENTIAL OBSERVATIONS - Cook's distance, standardised residuals, and a
 #     sensitivity refit without the most influential 1%.
+#     [JMP] With a country-level covariate, also check influential COUNTRIES:
+#     refit dropping one country at a time and watch the bas_rate_pp estimate.
 
-# 13. GOODNESS OF FIT - Lipsitz and Pulkstenis-Robinson tests.  
+# 13. GOODNESS OF FIT - Lipsitz and Pulkstenis-Robinson tests.
