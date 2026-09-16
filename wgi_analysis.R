@@ -51,6 +51,3 @@ sapply(c(gov, "gov_pc1"), function(g) {
   c(R2 = summary(m)$r.squared, b = unname(coef(m)[2]))
 }) |> t() |> round(3)
 
-# Dominance analysis (share of R² per indicator)
-domir(reformulate(gov, "wi_prev"),
-      function(fml) summary(lm(fml, data = cl))$r.squared)
