@@ -81,3 +81,6 @@ d.iwise_analysis |>
 # 6. Save ---------------------------------------------------------------
 saveRDS(d.iwise_analysis, "data/iwise_analysis.rds")
 file.exists("data/iwise_analysis.rds")
+
+
+summary(gbd$daly_diarr_rate)

@@ -155,7 +155,14 @@ v.jmp <- "bas_rate_pp"
 v.jmp.all <- c("bas_rate_pp", "bas_level", "sm_level",
                "prem_level", "avail_level", "qual_level")
 
-v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi, v.jmp)
+
+# GBD covariate. Country-year level.
+# Diarrheal disease DALYs, age-standardised rate per 100,000 (GBD 2023;
+# 2024/2025 surveys matched to 2023, see gbd_carried_fwd).
+v.gbd <- "daly_diarr_rate"
+
+
+v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi, v.jmp, v.gbd)
 v.categorical <- c("female", "urban_imp", "age_gp_profile",
                    "maritalstatus", "employment", "education")
 
@@ -239,7 +246,7 @@ cy <- d.iwise %>%
     # Proportion (0-1) with moderate-to-high WI: observed iwisescore >= 12.
     # Built from iwisescore, NOT iwise12_imp, so it matches the model predictor.
     iwise_mh   = weighted.mean(iwisescore >= 12, wgt2, na.rm = TRUE),
-    across(all_of(c(v.jmp.all, "log_gdp")), first),
+    across(all_of(c(v.jmp.all, "log_gdp", v.gbd)), first),
     .groups = "drop"
   )
 
@@ -265,16 +272,16 @@ d.inc <- d.iwise %>%
 # with other WGIs define their own complete-case sample.
 
 v.model.fl  <- c("FLI_3item", v.main, "hhsize", v.index.model, "log_gdp",
-                 v.wgi.main, v.jmp, v.categorical, v.cluster, v.weight)
+                 v.wgi.main, v.jmp, v.gbd, v.categorical, v.cluster, v.weight)
 v.model.inc <- c("INCOME_5",  v.main, "hhsize", v.index.model, "log_gdp",
-                 v.wgi.main, v.jmp, v.categorical, v.cluster, v.weight)
+                 v.wgi.main, v.jmp, v.gbd, v.categorical, v.cluster, v.weight)
 
 rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
                  "maritalstatus + hhsize + employment + education +",
                  v.index.model) #right hand side of the model
 
 # Contextual version (with country level variables). ONE governance term only.
-rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi.main, "+", v.jmp)
+rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd)
 
 
 # ---- 9. COMPLETE-CASE FLAGS AND MODEL WEIGHTS -------------------------------
@@ -330,6 +337,7 @@ saveRDS(list(d.iwise       = d.iwise,
              v.weight      = v.weight,
              v.jmp         = v.jmp,
              v.jmp.all     = v.jmp.all,
+             v.gbd         = v.gbd,
              v.indices     = v.indices,
              v.index.model = v.index.model,
              v.cluster     = v.cluster,
