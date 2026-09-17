@@ -38,7 +38,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 select <- dplyr::select   # MASS and others mask dplyr::select; be explicit
 
 # Loads every data frame and variable list created in 01_data_prep.R
-dat <- readRDS("data_prepared.rds")
+dat <- readRDS("iwise_data_prepared.rds")
 list2env(dat, envir = .GlobalEnv)
 rm(dat)
 
