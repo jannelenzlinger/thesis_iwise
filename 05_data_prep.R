@@ -336,6 +336,6 @@ saveRDS(list(d.iwise       = d.iwise,
              v.fli.items   = v.fli.items,
              v.model.fl    = v.model.fl,
              v.model.inc   = v.model.inc),
-        "data_prepared.rds")
+        "iwise_data_prepared.rds")
 
-cat("\nSaved data_prepared.rds\n")
+cat("\nSaved iwise_data_prepared.rds\n")
