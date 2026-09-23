@@ -4,10 +4,9 @@
 # Outcomes: FLI_3item (Financial Life Index, 3-item), INCOME_5 (Income Quintiles)
 # Main predictor: iwisescore (Water Insecurity Experiences, 0-36)
 #
-# RULE: this is the ONLY script that changes data. Every recode, derived
-# variable, sample restriction and weight lives here. 02_premodel_checks.R and
+# RULE: this is the ONLY script that changes data. Every recode post-merge, derived
+# variable, sample restriction and weight lives here. 06_premodel_checks.R and
 # later scripts only READ data_prepared.rds.
-# If a check makes you change something, change it HERE and re-run this script.
 #
 # STRUCTURE
 # ---------
@@ -74,6 +73,10 @@ d.iwise %>%
                    list(n_1  = ~sum(.x == 1, na.rm = TRUE),
                         n_0  = ~sum(.x == 0, na.rm = TRUE),
                         n_NA = ~sum(is.na(.x)))))
+
+table(raw = d.iwise$WP2319, recoded = d.iwise$s_2319, useNA = "ifany")
+table(raw = d.iwise$WP30,   recoded = d.iwise$s_30,   useNA = "ifany")
+table(raw = d.iwise$WP31,   recoded = d.iwise$s_31,   useNA = "ifany")
 
 
 # ---- 2.2 VALIDATE BY REPRODUCING GALLUP'S OWN 4-ITEM INDEX ------------------
@@ -172,7 +175,10 @@ v.categorical <- c("female", "urban_imp", "age_gp_profile",
 # INDEX_FS (Food & Shelter) is complete, so it IS a model predictor.
 v.indices     <- c("INDEX_PH", "INDEX_FS", "INDEX_CA")
 v.index.model <- "INDEX_FS"   # the one I want to use
-v.cluster <- "iso3c"
+# cluster = country_year (was iso3c), so the random intercept and
+# the country mean (Section 5.1) are defined on the same unit. Palestine 2025
+# drops out of the models via wgtnorm_using.
+v.cluster <- "country_year"
 
 v.fli.items <- c("WP2319", "WP30", "WP31", "WP88")
 
@@ -230,60 +236,85 @@ d.iwise <- d.iwise %>%
            .names = "{.col}_num")
   )
 
+# ---- 5.1 COUNTRY MEAN IWISE (within/between split, Mundlak) -----------------
+# Model uses RAW iwisescore + country mean:
+#   iwisescore coefficient = within-country effect
+#   iwise_mean coefficient = contextual effect (between minus within)
+#   between-country effect = sum of the two
+# Computed here, BEFORE the split, so the mean uses every respondent with an
+# IWISE score, not only each model's complete cases.
+# Weight = wgt2: a within-country quantity (READ_ME: country-specific analysis,
+# correct India weights). Same weight as the country-year data in Section 6.
+ 
+d.iwise <- d.iwise %>%
+  group_by(country_year) %>%
+  mutate(
+    .ok        = !is.na(iwisescore) & !is.na(wgt2),
+    iwise_mean = if (any(.ok)) weighted.mean(iwisescore[.ok],
+                                             wgt2[.ok])
+                 else NA_real_,
+    .ok        = NULL
+  ) %>%
+  ungroup()
+ 
+# <<< END ADDED --------------------------------------------------------------
+ 
 # Ethiopia income classification
 d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
-
-
+ 
+ 
 # ---- 6. COUNTRY-YEAR DATASET ------------------------------------------------
 # JMP and WGI vary only between country-years, so their correlation with IWISE
 # is assessed at that level (Checks 4c-bis and 7c). wgt2 is used because these
 # are within-country means (READ_ME: country-specific analysis).
-
+# >>> CHANGED: iwise_mean is taken from Section 5.1 instead of being
+# recalculated, so checks and model use the SAME country mean. WGI added,
+# since they are country-level predictors too.
+ 
 cy <- d.iwise %>%
   group_by(country_year) %>%
   summarise(
-    iwise_mean = weighted.mean(iwisescore,  wgt2, na.rm = TRUE),
     # Proportion (0-1) with moderate-to-high WI: observed iwisescore >= 12.
     # Built from iwisescore, NOT iwise12_imp, so it matches the model predictor.
     iwise_mh   = weighted.mean(iwisescore >= 12, wgt2, na.rm = TRUE),
-    across(all_of(c(v.jmp.all, "log_gdp", v.gbd)), first),
+    across(all_of(c("iwise_mean", v.jmp.all, "log_gdp", v.gbd, v.wgi)), first),
     .groups = "drop"
   )
-
-
+ 
+ 
 # ---- 7. SPLIT INTO ANALYTIC SAMPLES -----------------------------------------
 # Each outcome gets its own frame, so a respondent missing INCOME_5 still
 # counts towards the FLI model, and vice versa.
 # droplevels() stops polr() estimating cut-points for empty categories.
-
+ 
 d.fl <- d.iwise %>%
   drop_na(FLI_3item) %>%
   mutate(FLI_3item = droplevels(FLI_3item))
-
+ 
 d.inc <- d.iwise %>%
   drop_na(INCOME_5) %>%
   mutate(INCOME_5 = droplevels(INCOME_5))
-
-
+ 
+ 
 # ---- 8. PER-MODEL VARIABLE LISTS AND FORMULAS -------------------------------
 # These define the complete-case sample for each MAIN model.
 # The FLI items are deliberately NOT included: FLI_3item already encodes its
 # eligibility rule. Only the main WGI (GE) is included; sensitivity models
 # with other WGIs define their own complete-case sample.
-
-v.model.fl  <- c("FLI_3item", v.main, "hhsize", v.index.model, "log_gdp",
+ 
+v.model.fl  <- c("FLI_3item", v.main, "iwise_mean", "hhsize", v.index.model, "log_gdp",
                  v.wgi.main, v.jmp, v.gbd, v.categorical, v.cluster, v.weight)
-v.model.inc <- c("INCOME_5",  v.main, "hhsize", v.index.model, "log_gdp",
+v.model.inc <- c("INCOME_5",  v.main, "iwise_mean", "hhsize", v.index.model, "log_gdp",
                  v.wgi.main, v.jmp, v.gbd, v.categorical, v.cluster, v.weight)
-
+ 
 rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
                  "maritalstatus + hhsize + employment + education +",
                  v.index.model) #right hand side of the model
-
+ 
 # Contextual version (with country level variables). ONE governance term only.
-rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd)
-
-
+rhs_ctx <- paste(rhs, "+ iwise_mean + log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd)
+ 
+ 
 # ---- 9. COMPLETE-CASE FLAGS AND MODEL WEIGHTS -------------------------------
 # cc = row has every variable the main model needs (including the weight).
 #
@@ -291,7 +322,7 @@ rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd)
 # to sum to the COMPLETE-CASE N of each model. Rows are NOT dropped here, so
 # Check 2 can still compare kept and dropped cases. w_fit is NA where cc is
 # FALSE.
-
+ 
 add_cc_weight <- function(data, v.model) {
   data %>%
     mutate(
@@ -300,24 +331,24 @@ add_cc_weight <- function(data, v.model) {
                       NA_real_)
     )
 }
-
+ 
 d.fl  <- add_cc_weight(d.fl,  v.model.fl)
 d.inc <- add_cc_weight(d.inc, v.model.inc)
-
-
+ 
+ 
 # ---- 10. ROBUSTNESS SAMPLE --------------------------------------------------
 # Gallup's own 4-item index, only where WP88 was fielded. 7 levels.
 # Gets its own cc flag and weight, since its outcome differs.
-
+ 
 d.fl.gallup <- d.fl %>%
   filter(has_wp88) %>%
   mutate(INDEX_FL_ord = droplevels(INDEX_FL_ord)) %>%
   add_cc_weight(replace(v.model.fl, v.model.fl == "FLI_3item", "INDEX_FL_ord"))
-
-
+ 
+ 
 # ---- 11. SAVE ---------------------------------------------------------------
 # Frames AND variable definitions saved together, so they stay in sync.
-
+ 
 saveRDS(list(d.iwise       = d.iwise,
              d.fl          = d.fl,
              d.inc         = d.inc,
@@ -345,5 +376,5 @@ saveRDS(list(d.iwise       = d.iwise,
              v.model.fl    = v.model.fl,
              v.model.inc   = v.model.inc),
         "iwise_data_prepared.rds")
-
+ 
 cat("\nSaved iwise_data_prepared.rds\n")

@@ -90,6 +90,7 @@ d.fl %>% select(any_of(v.model.fl)) %>%
   naniar::miss_var_summary() %>% print(n = 30)
 
 cat("\n=== INCOME SAMPLE ===\n")
+
 d.inc %>% select(any_of(v.model.inc)) %>%
   naniar::miss_var_summary() %>% print(n = 30)
 
@@ -262,7 +263,7 @@ d.fl %>%
   summarise(n = n(), pct_no_wp88 = round(100 * mean(!has_wp88), 1),
             .groups = "drop") %>%
   arrange(desc(pct_no_wp88)) %>%
-  print(n = Inf)
+  print(n = Inf) #yes, if missing then 100% 
 
 # 3c. ROBUSTNESS SAMPLE (created in 01 Section 10).
 cat("\nRobustness sample (Gallup 4-item, WP88 countries only): N =",
@@ -285,8 +286,8 @@ for (v in v.categorical) {
 
 # 4b. Continuous predictors.
 d.fl %>%
-  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp", v.wgi,
-                  v.jmp))) %>%
+  select(any_of(c("iwisescore", "iwise_mean", "hhsize", "gdp_pc_ppp",
+                  "log_gdp", v.wgi, v.jmp))) %>%
   summarise(across(everything(),
                    list(min  = ~min(.x, na.rm = TRUE),
                         med  = ~median(.x, na.rm = TRUE),
@@ -390,6 +391,10 @@ car::vif(m.vifprobe)
 # For FACTORS read GVIF^(1/(2*Df)), SQUARED, against thresholds of 5 or 10.
 # Earlier run with wgi_cc_sc: log_gdp 2.00, wgi_cc_sc 1.73, iwisescore 1.09.
 # Re-check now that GE replaces CC.
+# >>> CHANGED: rhs_ctx now includes iwise_mean. Some correlation with
+# iwisescore is expected and does not bias the within effect; watch its
+# overlap with log_gdp, wgi_ge_sc and daly_diarr_rate. Report these VIFs.
+# <<< END CHANGED
 
 # 7c. Country-year collinearity: IWISE vs JMP (cy created in 01 Section 6).
 cy %>%
@@ -398,6 +403,10 @@ cy %>%
   round(2)
 # RESULT: bas_rate_pp x IWISE = 0.14. JMP levels -0.53 to -0.69 with IWISE and
 # 0.79-0.96 with each other, so use at most ONE JMP level in any model.
+# >>> CHANGED: cy now also contains the WGI, and iwise_mean is the same
+# country mean used in the model. Check iwise_mean against log_gdp, wgi_ge_sc,
+# bas_rate_pp and daly_diarr_rate: these are all country-level predictors.
+# <<< END CHANGED
 
 
 # =============================================================================
@@ -417,6 +426,18 @@ d.fl %>%
 
 d.fl %>% filter(cc) %>% count(across(all_of(v.cluster))) %>%
   summarise(n_countries_cc = n())
+
+# does Palestine 2025 drop out of the models?
+# wgtnorm_using should be missing for 2025, so its rows should be cc = FALSE
+# in both samples. If 2025 shows cc = TRUE, Palestine counts as TWO clusters.
+for (d.name in c("d.fl", "d.inc")) {
+  cat("\n--- Palestine by country_year,", d.name, "---\n")
+  get(d.name) %>%
+    filter(grepl("palestin", countrynew, ignore.case = TRUE)) %>%
+    count(country_year, wave, cc) %>%
+    print()
+}
+
 
 # 8b. ICC: share of outcome variance BETWEEN countries.
 icc_formula <- function(outcome) {
@@ -442,8 +463,10 @@ d.fl %>%
   labs(title = "Country mean, FLI_3item", x = NULL, y = "Mean") +
   theme_minimal(base_size = 7)
 
-# FIX (applied when fitting, not here): polr() with weights = w_fit and CR2
-# cluster-robust SEs (clubSandwich).
+# >>> CHANGED: fix applied when fitting is now a random intercept per
+# country-year, ordinal::clmm(... + (1 | country_year)), with iwisescore raw
+# plus iwise_mean (was: polr() with CR2 cluster-robust SEs).
+# <<< END CHANGED
 
 
 # =============================================================================
