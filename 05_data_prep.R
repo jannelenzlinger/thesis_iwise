@@ -263,19 +263,28 @@ d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
  
  
 # ---- 6. COUNTRY-YEAR DATASET ------------------------------------------------
-# JMP and WGI vary only between country-years, so their correlation with IWISE
-# is assessed at that level (Checks 4c-bis and 7c). wgt2 is used because these
-# are within-country means (READ_ME: country-specific analysis).
- 
+# One row per country-year, for country-level checks (02: Checks 4c-bis, 7c).
+# gbd_cy = average DALY rate across all adults in the country-year
+# (wgt2-weighted mean of the age-group rates). Checks only, NOT a model variable.
+
 cy <- d.iwise %>%
-  group_by(country_year) %>%
+  group_by(country_year) %>%                                   # one group per country-year
   summarise(
-    # Proportion (0-1) with moderate-to-high WI: observed iwisescore >= 12.
-    # Built from iwisescore, NOT iwise12_imp, so it matches the model predictor.
-    iwise_mh   = weighted.mean(iwisescore >= 12, wgt2, na.rm = TRUE),
+    # Proportion (0-1) with moderate-to-high WI (observed iwisescore >= 12)
+    iwise_mh = weighted.mean(iwisescore >= 12, wgt2, na.rm = TRUE),
+    # Country-year DALY rate
+    gbd_cy = {
+      ok <- !is.na(.data[[v.gbd]]) & !is.na(wgt2)             # rows with rate AND weight
+      if (any(ok)) weighted.mean(.data[[v.gbd]][ok], wgt2[ok]) else NA_real_
+    },
+    # Country-level variables: identical within a country-year, so take the first
     across(all_of(c("iwise_mean", v.jmp.all, "log_gdp", v.wgi)), first),
-    .groups = "drop"
+    .groups = "drop"                                           # remove grouping
   )
+
+# Checks: one row per country-year, plausible DALY values
+stopifnot(nrow(cy) == n_distinct(d.iwise$country_year))
+summary(cy$gbd_cy)
  
  
 # ---- 7. SPLIT INTO ANALYTIC SAMPLES -----------------------------------------
