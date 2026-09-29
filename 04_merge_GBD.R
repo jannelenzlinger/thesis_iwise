@@ -61,7 +61,7 @@ gbd_bands |> filter(!is.na(iso3c)) |>
 gbd <- gbd_bands |>
   filter(!is.na(iso3c)) |>                                      # drop potential regions
   group_by(iso3c, gbd_year = year, age_gp_profile) |>           # one row per country-year-group
-  summarise(daly_diarr_rate = sum(Number) / sum(pop) * 1e5,     # crude rate per 100k
+  summarise(daly_enteric_rate = sum(Number) / sum(pop) * 1e5,     # crude rate per 100k
             n_bands = n(),                                      # bands used (for checking)
             .groups = "drop")
 
@@ -102,21 +102,21 @@ stopifnot(nrow(d.iwise_all_contextual) == nrow(d.iwise_gdp_gov_jmp))
 
 # Check H: missing rates should only be people with missing age
 d.iwise_all_contextual |>
-  filter(is.na(daly_diarr_rate)) |>
+  filter(is.na(daly_enteric_rate)) |>
   count(iso3c, year, age_missing = is.na(age_key))              # expect age_missing = TRUE only
 
 # Check I: plausibility by age group (rates usually highest in 50+)
 gbd |> filter(iso3c %in% my_iso) |>
   group_by(age_gp_profile) |>
-  summarise(min = min(daly_diarr_rate),
-            median = median(daly_diarr_rate),
-            max = max(daly_diarr_rate))
+  summarise(min = min(daly_enteric_rate),
+            median = median(daly_enteric_rate),
+            max = max(daly_enteric_rate))
 
 # Check J: carry-forward and spot-check
 d.iwise_all_contextual |> distinct(year, gbd_year_used, gbd_carried_fwd)
 d.iwise_all_contextual |>
   filter(iso3c %in% c("PSE", "VEN", "LBN")) |>
-  distinct(iso3c, year, age_key, gbd_year_used, daly_diarr_rate) |>
+  distinct(iso3c, year, age_key, gbd_year_used, daly_enteric_rate) |>
   arrange(iso3c, year, age_key)
 
 # 9. Save ---------------------------------------------------------------

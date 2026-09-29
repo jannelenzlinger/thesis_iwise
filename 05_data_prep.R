@@ -1,6 +1,6 @@
 # =============================================================================
 # 01 DATA PREPARATION  |  Ordinal logistic regression
-# Dataset: iwise_analysis
+# Dataset: iwise_all_contextual
 # Outcomes: FLI_3item (Financial Life Index, 3-item), INCOME_5 (Income Quintiles)
 # Main predictor: iwisescore (Water Insecurity Experiences, 0-36)
 #
@@ -40,7 +40,7 @@ select <- dplyr::select   # MASS and others mask dplyr::select; be explicit
 # Load from FILE, not from an object already in memory, so the script runs
 # standalone in a fresh session.
 
-d.iwise <- readRDS("data/iwise_analysis.rds")
+d.iwise <- readRDS("data/iwise_all_contextual.rds")
 
 
 # ---- 2. FINANCIAL LIFE INDEX RECALCULATION ----------------------------------
@@ -160,9 +160,9 @@ v.jmp.all <- c("bas_rate_pp", "bas_level", "sm_level",
 
 
 # GBD covariate. Country-year level.
-# Diarrheal disease DALYs, age-standardised rate per 100,000 (GBD 2023;
+# Enteric disease DALYs, matched, by age group(GBD 2023;
 # 2024/2025 surveys matched to 2023, see gbd_carried_fwd).
-v.gbd <- "daly_diarr_rate"
+v.gbd <- "daly_enteric_rate"
 
 
 v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi, v.jmp, v.gbd)
@@ -256,8 +256,7 @@ d.iwise <- d.iwise %>%
     .ok        = NULL
   ) %>%
   ungroup()
- 
-# <<< END ADDED --------------------------------------------------------------
+
  
 # Ethiopia income classification
 d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
@@ -267,9 +266,6 @@ d.iwise$country_income_group[d.iwise$country_name == "Ethiopia"] <- "Low income"
 # JMP and WGI vary only between country-years, so their correlation with IWISE
 # is assessed at that level (Checks 4c-bis and 7c). wgt2 is used because these
 # are within-country means (READ_ME: country-specific analysis).
-# >>> CHANGED: iwise_mean is taken from Section 5.1 instead of being
-# recalculated, so checks and model use the SAME country mean. WGI added,
-# since they are country-level predictors too.
  
 cy <- d.iwise %>%
   group_by(country_year) %>%
@@ -277,7 +273,7 @@ cy <- d.iwise %>%
     # Proportion (0-1) with moderate-to-high WI: observed iwisescore >= 12.
     # Built from iwisescore, NOT iwise12_imp, so it matches the model predictor.
     iwise_mh   = weighted.mean(iwisescore >= 12, wgt2, na.rm = TRUE),
-    across(all_of(c("iwise_mean", v.jmp.all, "log_gdp", v.gbd, v.wgi)), first),
+    across(all_of(c("iwise_mean", v.jmp.all, "log_gdp", v.wgi)), first),
     .groups = "drop"
   )
  
@@ -375,6 +371,6 @@ saveRDS(list(d.iwise       = d.iwise,
              v.fli.items   = v.fli.items,
              v.model.fl    = v.model.fl,
              v.model.inc   = v.model.inc),
-        "iwise_data_prepared.rds")
+        "data/iwise_data_prepared.rds")
  
-cat("\nSaved iwise_data_prepared.rds\n")
+file.exists("data/iwise_data_prepared.rds")
