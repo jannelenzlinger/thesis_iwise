@@ -38,7 +38,7 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 select <- dplyr::select   # MASS and others mask dplyr::select; be explicit
 
 # Loads every data frame and variable list created in 01_data_prep.R
-dat <- readRDS("iwise_data_prepared.rds")
+dat <- readRDS("data/iwise_data_prepared.rds")
 list2env(dat, envir = .GlobalEnv)
 rm(dat)
 
@@ -108,11 +108,11 @@ cat(sprintf("Income: %d of %d retained (%.1f%% lost to covariates)\n",
 bind_rows(
   d.fl %>% group_by(complete = cc) %>%
     summarise(model = "FLI_3item", n = n(),
-              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp)),
+              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp, v.gbd)),
                      ~round(mean(.x, na.rm = TRUE), 2)), .groups = "drop"),
   d.inc %>% group_by(complete = cc) %>%
     summarise(model = "INCOME_5", n = n(),
-              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp)),
+              across(all_of(c("iwisescore", "hhsize", "gdp_pc_ppp", v.jmp, v.gbd)),
                      ~round(mean(.x, na.rm = TRUE), 2)), .groups = "drop")
 ) %>% relocate(model) %>% print()
 
@@ -137,13 +137,13 @@ cat("\nCountries in FLI model:   ",
 cat("Countries in income model:",
     d.inc %>% filter(cc) %>% distinct(across(all_of(v.cluster))) %>% nrow(), "\n")
 
-# 2e-bis. Which countries have NO bas_rate_pp at all?
-cat("\n--- Countries with no bas_rate_pp ---\n")
+# 2e-bis. Which country-years are missing any country-level covariate?
+v.ctx <- c("log_gdp", v.wgi.main, v.jmp, v.gbd)                 # country-level covariates in rhs_ctx
 d.iwise %>%
-  group_by(across(all_of(v.cluster))) %>%
-  summarise(pct_missing_jmp = round(100 * mean(is.na(.data[[v.jmp]])), 1),
+  group_by(across(all_of(v.cluster))) %>%                       # one row per country-year
+  summarise(across(all_of(v.ctx), ~round(100 * mean(is.na(.x)), 1)),  # % missing per variable
             .groups = "drop") %>%
-  filter(pct_missing_jmp > 0) %>%
+  filter(if_any(all_of(v.ctx), ~.x > 0)) %>%                    # keep country-years with any gap
   print(n = Inf)
 
 # 2f. For countries losing most of their cases, WHICH variable is responsible?
@@ -287,7 +287,7 @@ for (v in v.categorical) {
 # 4b. Continuous predictors.
 d.fl %>%
   select(any_of(c("iwisescore", "iwise_mean", "hhsize", "gdp_pc_ppp",
-                  "log_gdp", v.wgi, v.jmp))) %>%
+                  "log_gdp", v.wgi, v.jmp, v.gbd))) %>%
   summarise(across(everything(),
                    list(min  = ~min(.x, na.rm = TRUE),
                         med  = ~median(.x, na.rm = TRUE),
@@ -303,7 +303,7 @@ d.fl %>%
 
 # 4c. Histograms.
 d.fl %>%
-  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp", v.jmp))) %>%
+  select(any_of(c("iwisescore", "hhsize", "gdp_pc_ppp", "log_gdp", v.jmp, v.gbd))) %>%
   pivot_longer(everything()) %>%
   ggplot(aes(value)) +
   geom_histogram(bins = 40, fill = "#3D4222") +
@@ -311,13 +311,22 @@ d.fl %>%
   labs(title = "Continuous predictors, FLI sample") +
   theme_minimal()
 
-# 4c-bis. How much does bas_rate_pp vary across COUNTRY-YEARS?
+# 4c-bis. How much do the country-level covariates vary across COUNTRY-YEARS?
+
+# bas_rate_pp: change in at-least-basic coverage (pp per year)
 cy %>%
   summarise(n_country_years = sum(!is.na(bas_rate_pp)),
             median   = median(bas_rate_pp, na.rm = TRUE),
             iqr_lo   = quantile(bas_rate_pp, .25, na.rm = TRUE),
             iqr_hi   = quantile(bas_rate_pp, .75, na.rm = TRUE),
             pct_flat = round(100 * mean(abs(bas_rate_pp) < 0.05, na.rm = TRUE), 1))
+
+# gbd_cy: country-year DALY rate per 100,000 (checks only, not in models)
+cy %>%
+  summarise(n_country_years = sum(!is.na(gbd_cy)),
+            median = median(gbd_cy, na.rm = TRUE),
+            iqr_lo = quantile(gbd_cy, .25, na.rm = TRUE),
+            iqr_hi = quantile(gbd_cy, .75, na.rm = TRUE))
 
 # 4d. iwisescore across the standard bands.
 table(d.fl$iwise_cat, useNA = "ifany")
@@ -371,43 +380,103 @@ epv_check(d.inc, "INCOME_5",  rhs_ctx)
 # -----------------------------------------------------------------------------
 # WHY: overlapping predictors give unstable coefficients and wide SEs.
 # A property of the PREDICTORS ONLY, so it can be checked before fitting.
+# Individual-level r for country-level variables is inflated by cluster size;
+# report the country-year results (7c, 7e) for those.
 # =============================================================================
 
-# 7a. Correlation matrix (all six WGI, to document their overlap).
-d.fl %>%
-  select(any_of(c("iwisescore", "hhsize", "log_gdp", v.wgi, v.jmp,
-                  paste0(v.indices, "_num")))) %>%
-  cor(use = "pairwise.complete.obs") %>%
-  round(2) %>%
-  print()
-# LOOKING FOR: |r| above ~0.8. Expect it among the WGI indicators, which is
-# why the main model uses GE only.
+d.cc.fl <- d.fl %>% filter(cc)                                 # FLI model sample
 
-# 7b. VIF on the main model (GE only). A random outcome gives the identical
-#     answer - VIF ignores the outcome.
+# 7a. Individual-level correlation matrices: Pearson AND Spearman
+d.cor.fl <- d.cc.fl %>%
+  mutate(age_gp_num = as.numeric(age_gp_profile)) %>%          # 1-4, so it can be correlated
+  select(any_of(c("iwisescore", "age", "age_gp_num", "hhsize", "log_gdp",
+                  v.wgi, v.jmp, v.gbd, paste0(v.indices, "_num"))))
+
+for (m in c("pearson", "spearman")) {                          # run both methods
+  cat("\n---", toupper(m), "---\n")
+  print(round(cor(d.cor.fl, use = "pairwise.complete.obs", method = m), 2))
+}
+# LOOKING FOR: |r| above ~0.8 (expected among the WGI).
+# Large Pearson vs Spearman gaps = non-linearity or outliers.
+
+# 7b. VIF on the main model (GE only). VIF ignores the outcome.
 set.seed(2024)
 m.vifprobe <- lm(as.formula(paste("rnorm(nrow(d.fl)) ~", rhs_ctx)), data = d.fl)
 car::vif(m.vifprobe)
 # For FACTORS read GVIF^(1/(2*Df)), SQUARED, against thresholds of 5 or 10.
-# Earlier run with wgi_cc_sc: log_gdp 2.00, wgi_cc_sc 1.73, iwisescore 1.09.
-# Re-check now that GE replaces CC.
-# >>> CHANGED: rhs_ctx now includes iwise_mean. Some correlation with
-# iwisescore is expected and does not bias the within effect; watch its
-# overlap with log_gdp, wgi_ge_sc and daly_diarr_rate. Report these VIFs.
-# <<< END CHANGED
+# Watch: iwise_mean, log_gdp, wgi_ge_sc, and the DALY rate vs age_gp_profile.
 
-# 7c. Country-year collinearity: IWISE vs JMP (cy created in 01 Section 6).
+# 7c. Country-year correlation matrices (cy from 01 Section 6, incl. gbd_cy)
+cy.num <- cy %>% select(-country_year)                         # numeric columns only
+for (m in c("pearson", "spearman")) {
+  cat("\n--- COUNTRY-YEAR", toupper(m), "---\n")
+  print(round(cor(cy.num, use = "pairwise.complete.obs", method = m), 2))
+}
+# Check iwise_mean against log_gdp, wgi_ge_sc, bas_rate_pp and gbd_cy.
+# Earlier result: JMP levels 0.79-0.96 with each other -> max ONE per model.
+
+
+# ---- 7d. DALY RATE vs AGE ---------------------------------------------------
+# Within a country-year the DALY rate varies ONLY by age group, so it may
+# overlap with age_gp_profile in the model.
+
+# 7d-i. DALY rate by age group
+d.cc.fl %>%
+  group_by(age_gp_profile) %>%                                 # one row per age group
+  summarise(n      = n(),
+            median = median(.data[[v.gbd]]),
+            mean   = mean(.data[[v.gbd]]),
+            min    = min(.data[[v.gbd]]),
+            max    = max(.data[[v.gbd]]),
+            .groups = "drop") %>%
+  mutate(across(where(is.numeric), ~round(.x, 1)))
+# EXPECT: rates rise with age, steepest in 50+.
+
+# 7d-ii. Correlation with age: overall and WITHIN country-year
+d.cc.fl %>%
+  mutate(age_gp_num = as.numeric(age_gp_profile)) %>%          # 1-4
+  group_by(across(all_of(v.cluster))) %>%
+  mutate(daly_within = .data[[v.gbd]] - mean(.data[[v.gbd]])) %>%  # remove country-year mean
+  ungroup() %>%
+  summarise(
+    r_overall_agegp = cor(.data[[v.gbd]], age_gp_num, method = "spearman"),
+    r_overall_age   = cor(.data[[v.gbd]], age, method = "spearman",
+                          use = "complete.obs"),               # continuous age
+    r_within_agegp  = cor(daly_within, age_gp_num, method = "spearman")
+  ) %>%
+  mutate(across(everything(), ~round(.x, 2)))
+# r_within near 1 = within countries, the DALY rate is essentially an age proxy.
+
+# 7d-iii. How much DALY variation is between country-years vs by age?
+r2_cy  <- summary(lm(reformulate(v.cluster, v.gbd),
+                     data = d.cc.fl))$r.squared                # country-year only
+r2_add <- summary(lm(reformulate(c(v.cluster, "age_gp_profile"), v.gbd),
+                     data = d.cc.fl))$r.squared                # + age group
+cat(sprintf("\nDALY variance explained: country-year %.2f | + age group %.2f\n",
+            r2_cy, r2_add))
+# High r2_cy = DALY mainly varies BETWEEN countries.
+# Large jump when adding age = age carries much of the variation.
+
+
+# ---- 7e. GDP vs GOVERNMENT EFFECTIVENESS -----------------------------------
+# Both are country-year level, so assess on cy.
+
 cy %>%
-  select(-country_year) %>%
-  cor(use = "pairwise.complete.obs", method = "spearman") %>%
-  round(2)
-# RESULT: bas_rate_pp x IWISE = 0.14. JMP levels -0.53 to -0.69 with IWISE and
-# 0.79-0.96 with each other, so use at most ONE JMP level in any model.
-# >>> CHANGED: cy now also contains the WGI, and iwise_mean is the same
-# country mean used in the model. Check iwise_mean against log_gdp, wgi_ge_sc,
-# bas_rate_pp and daly_diarr_rate: these are all country-level predictors.
-# <<< END CHANGED
+  summarise(pearson  = round(cor(log_gdp, .data[[v.wgi.main]],
+                                 use = "complete.obs"), 2),
+            spearman = round(cor(log_gdp, .data[[v.wgi.main]],
+                                 method = "spearman", use = "complete.obs"), 2),
+            n_cy     = sum(!is.na(log_gdp) & !is.na(.data[[v.wgi.main]])))
+# |r| > 0.8 = keep one in the main model, the other as a sensitivity analysis.
 
+cy %>%
+  ggplot(aes(log_gdp, .data[[v.wgi.main]])) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, colour = "#3D4222") +
+  labs(title = "log GDP per capita vs Government Effectiveness",
+       x = "log GDP per capita (PPP)",
+       y = "Government Effectiveness (0-100)") +
+  theme_minimal()
 
 # =============================================================================
 # CHECK 8: CLUSTERING / NON-INDEPENDENCE
@@ -415,6 +484,7 @@ cy %>%
 # WHY: respondents are nested in countries, and log_gdp / wgi / bas_rate_pp
 # take ONE value per country-year. Ignoring this makes SEs far too small.
 # The ICC uses an EMPTY model, so it describes the data, not your model.
+# DALY rate varies by age group within a country-year, unlike the other country-level variables.
 # =============================================================================
 
 # 8a. How many clusters, and how big?
