@@ -162,7 +162,13 @@ v.jmp.all <- c("bas_rate_pp", "bas_level", "sm_level",
 # GBD covariate. Country-year level.
 # Enteric disease DALYs, matched, by age group(GBD 2023;
 # 2024/2025 surveys matched to 2023, see gbd_carried_fwd).
-v.gbd <- "daly_enteric_rate"
+v.gbd <- "daly_enteric_rate"   # RAW rate: descriptives and checks only
+
+# >>> ADDED: model version of the DALY rate (natural log, created in Section 5).
+# v.gbd stays the raw rate, because Section 4 converts v.continuous to numeric
+# before Section 5 creates this variable.
+v.gbd.model <- "daly_enteric_model"
+# <<< END ADDED
 
 
 v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi, v.jmp, v.gbd)
@@ -223,8 +229,17 @@ d.iwise <- d.iwise %>%
     n_fli_answered = rowSums(!is.na(across(all_of(v.fli.items)))),
     has_wp88       = !is.na(WP88),
 
-    # GDP is right-skewed; log gives "per 1% change" interpretation.
+    # >>> CHANGED (comment only): corrected interpretation
+    # GDP is right-skewed; OR per 1-unit log = per 2.72-fold increase in GDP.
+    # <<< END CHANGED
     log_gdp = log(gdp_pc_ppp),
+
+    # >>> ADDED: DALY rate is right-skewed (mean 592, SD 699) and on a much
+    # larger scale than the other predictors, which caused the clmm()
+    # "very large eigenvalue" warning. Natural log, as for GDP.
+    # OR per 1-unit log = per 2.72-fold increase in the DALY rate.
+    daly_enteric_model = log(daly_enteric_rate),
+    # <<< END ADDED
 
     # Standard IWISE bands (Young et al. 2019), in case linearity fails.
     iwise_cat = cut(iwisescore, breaks = c(-Inf, 2, 11, 23, Inf),
@@ -235,6 +250,11 @@ d.iwise <- d.iwise %>%
     across(all_of(v.indices), ~as.numeric(as.character(.x)),
            .names = "{.col}_num")
   )
+
+# >>> ADDED: the log is undefined for 0 or negative values, so check first.
+stopifnot(min(d.iwise$daly_enteric_rate, na.rm = TRUE) > 0)
+summary(d.iwise$daly_enteric_model)   # check: plausible range, no -Inf
+# <<< END ADDED
 
 # ---- 5.1 COUNTRY MEAN IWISE (within/between split, Mundlak) -----------------
 # Model uses RAW iwisescore + country mean:
@@ -307,17 +327,21 @@ d.inc <- d.iwise %>%
 # eligibility rule. Only the main WGI (GE) is included; sensitivity models
 # with other WGIs define their own complete-case sample.
  
+# >>> CHANGED: v.gbd -> v.gbd.model (log DALY rate) in both lists and rhs_ctx
 v.model.fl  <- c("FLI_3item", v.main, "iwise_mean", "hhsize", v.index.model, "log_gdp",
-                 v.wgi.main, v.jmp, v.gbd, v.categorical, v.cluster, v.weight)
+                 v.wgi.main, v.jmp, v.gbd.model, v.categorical, v.cluster, v.weight)
 v.model.inc <- c("INCOME_5",  v.main, "iwise_mean", "hhsize", v.index.model, "log_gdp",
-                 v.wgi.main, v.jmp, v.gbd, v.categorical, v.cluster, v.weight)
+                 v.wgi.main, v.jmp, v.gbd.model, v.categorical, v.cluster, v.weight)
+# <<< END CHANGED
  
 rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
                  "maritalstatus + hhsize + employment + education +",
                  v.index.model) #right hand side of the model
  
 # Contextual version (with country level variables). ONE governance term only.
-rhs_ctx <- paste(rhs, "+ iwise_mean + log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd)
+# >>> CHANGED: v.gbd -> v.gbd.model
+rhs_ctx <- paste(rhs, "+ iwise_mean + log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd.model)
+# <<< END CHANGED
  
  
 # ---- 9. COMPLETE-CASE FLAGS AND MODEL WEIGHTS -------------------------------
@@ -374,6 +398,7 @@ saveRDS(list(d.iwise       = d.iwise,
              v.jmp         = v.jmp,
              v.jmp.all     = v.jmp.all,
              v.gbd         = v.gbd,
+             v.gbd.model   = v.gbd.model,   # >>> ADDED
              v.indices     = v.indices,
              v.index.model = v.index.model,
              v.cluster     = v.cluster,
