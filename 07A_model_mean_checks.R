@@ -2,9 +2,11 @@
 # 07_models.R
 # First modelling attempt: multilevel ordinal logistic regression
 #   Outcomes : FLI_3item (d.fl) first, then INCOME_5 (d.inc)
-#   M0       : unadjusted     = iwisescore + iwise_mean (Mundlak correction)
+#   M0       : unadjusted     = iwisescore
 #   M1       : fully adjusted = rhs_ctx (individual + country-level covariates)
 #   Both     : random intercept per country_year, weights = w_fit
+#   Section 3 first checks whether the country-year mean (Mundlak) is needed,
+#   then sets the final models (decision: exclude the mean).
 # Then checks 1-4: proportional odds, linearity, influence, goodness of fit.
 # =============================================================================
 
@@ -19,16 +21,15 @@ library(generalhoslem)               # lipsitz.test(), pulkrob.chisq(), pulkrob.
 
 
 # ---- 1. DATA ----------------------------------------------------------------
-dat <- readRDS("data/iwise_data_prepared.rds")                  # read saved list from 05
-list2env(dat, envir = .GlobalEnv)                               # unpack list items into workspace
-rm(dat)                                                         # remove the now-redundant list
+list2env(readRDS("data/iwise_data_prepared.rds"), envir = globalenv())  # restores d.fl, d.inc, rhs_ctx, v.* objects
 
-prep <- function(data, y) {                                     # builds the analytic sample for one outcome
+prep <- function(data, y) {                                # builds the analytic sample for one outcome
   data %>%
-    filter(cc) %>%                                              # complete cases = exactly the rows the model uses
-    mutate(.id          = row_number(),                         # row id, to trace influential observations later
-           country_year = factor(.data[[v.cluster]]),           # grouping factor for the random intercept
-           iwise_cat    = factor(iwise_cat, ordered = FALSE))   # unordered: avoids polynomial contrasts
+    filter(cc) %>%                                         # complete cases = exactly the rows the model uses
+    mutate(.id          = row_number(),                    # row id, to trace influential observations later
+           country_year = factor(.data[[v.cluster]]),      # grouping factor for the random intercept
+           iwise_cat    = factor(iwise_cat, ordered = FALSE),  # unordered: avoids polynomial contrasts
+           "{y}" := factor(.data[[y]], ordered = TRUE))    # clm()/clmm() need an ordered factor outcome
 }
 
 d.fl.cc  <- prep(d.fl,  "FLI_3item")                       # FLI analytic sample
@@ -37,20 +38,25 @@ d.inc.cc <- prep(d.inc, "INCOME_5")                        # income analytic sam
 table(d.fl.cc$FLI_3item)                                   # check: 5 levels, lowest first
 table(d.inc.cc$INCOME_5)                                   # check: 5 levels, poorest quintile first
 
-v.watch <- c("iwisescore", "iwise_mean", "log_gdp",        # terms to monitor in checks 3 and LOO:
-             v.wgi.main, v.jmp, v.gbd)                     # IWISE terms + country-level covariates
+v.watch <- c("iwisescore", "log_gdp_c",                    # terms to monitor in checks 3 and LOO:
+             paste0(v.wgi.main, "_c"), v.jmp,              # IWISE + country-level covariates
+             paste0(v.gbd.model, "_c"))                    # (centred names, see 05 Section 5.2)
 
 
 # ---- 2. FORMULAS AND HELPERS ------------------------------------------------
-rhs_unadj <- "iwisescore + iwise_mean"                     # M0: IWISE + its country-year mean (Mundlak)
+# with-mean versions are built here explicitly for the check in Section 3a.
+rhs_unadj      <- "iwisescore"                             # M0: IWISE only
+rhs_unadj_mean <- "iwisescore + iwise_mean"                # M0 + country-year mean (Mundlak)
+rhs_ctx_mean   <- paste(rhs_ctx, "+ iwise_mean")           # M1 + country-year mean (Mundlak)
+
 re_term   <- "(1 | country_year)"                          # random intercept: one shift per country-year
 
 make_f <- function(y, rhs, random = TRUE) {                # turns text into a model formula
   as.formula(paste(y, "~", rhs,                            # outcome ~ predictors
                    if (random) paste("+", re_term) else "")) # + random intercept (or none)
 }
-
-fit_clmm <- function(data, y, rhs) {                       # same model as Section 3, used in loops
+#function helps for loops and makes sure the settings are the same everywhere
+fit_clmm <- function(data, y, rhs) {                       # same model everywhere, used in loops
   clmm(make_f(y, rhs), data = data, weights = w_fit,       # weighted multilevel ordinal logit
        link = "logit", Hess = TRUE, nAGQ = 1)              # logit link, keep Hessian, Laplace approx.
 }
@@ -73,73 +79,109 @@ icc <- function(m) {                                       # latent-scale ICC fr
 }
 
 
+# ---- 3a. IS THE COUNTRY-YEAR MEAN NEEDED? (MUNDLAK) -------------------------  # >>> CHANGED: now first
+# iwise_mean = contextual effect (between minus within). If it is ~0 and the
+# iwisescore OR does not change, the mean can be dropped.
+# Without the mean, iwisescore is a blend of within and between effects.
+m.fl.0.nm  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_unadj)        # FLI, unadjusted, without mean
+m.fl.0.wm  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_unadj_mean)   # FLI, unadjusted, with mean
+m.fl.1.nm  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx)          # FLI, adjusted, without mean
+m.fl.1.wm  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx_mean)     # FLI, adjusted, with mean
+m.inc.0.nm <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_unadj)        # income, unadjusted, without mean
+m.inc.0.wm <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_unadj_mean)   # income, unadjusted, with mean
+m.inc.1.nm <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx)          # income, adjusted, without mean
+m.inc.1.wm <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx_mean)     # income, adjusted, with mean
+
+# 3a-i. IWISE odds ratios side by side
+bind_rows(tidy_or(m.fl.0.wm,  "FLI M0 with mean"), tidy_or(m.fl.0.nm,  "FLI M0 without mean"),
+          tidy_or(m.fl.1.wm,  "FLI M1 with mean"), tidy_or(m.fl.1.nm,  "FLI M1 without mean"),
+          tidy_or(m.inc.0.wm, "INC M0 with mean"), tidy_or(m.inc.0.nm, "INC M0 without mean"),
+          tidy_or(m.inc.1.wm, "INC M1 with mean"), tidy_or(m.inc.1.nm, "INC M1 without mean")) %>%
+  filter(term %in% c("iwisescore", "iwise_mean")) %>%      # IWISE rows only
+  select(model, term, OR, lo, hi, p) %>%                   # OR, 95% CI, p-value
+  print()                                                  # similar iwisescore ORs = the mean barely matters
+
+# 3a-ii. Likelihood-ratio test: does adding the mean improve the fit?
+#        (Hedeker 2015, p. 9). Small p = within and between effects differ.
+anova(m.fl.0.nm,  m.fl.0.wm)                               # FLI, unadjusted   (p = 0.001)
+anova(m.fl.1.nm,  m.fl.1.wm)                               # FLI, adjusted     (p = 0.48)
+anova(m.inc.0.nm, m.inc.0.wm)                              # income, unadjusted (p < 0.001)
+anova(m.inc.1.nm, m.inc.1.wm)                              # income, adjusted  (p = 0.018, dAIC = 4)
+
+# =============================================================================
+# DECISION: EXCLUDE MEAN
+# The iwisescore OR is unchanged in the adjusted models (FLI 0.967, income
+# 0.982, with and without), fit improves not at all for FLI and only
+# marginally for income. The with-mean models are reported as sensitivity.
+# =============================================================================
 
 
-sapply(d.fl.cc[c("iwisescore", "iwise_mean", "hhsize", "log_gdp", v.wgi.main, v.jmp, v.gbd)],
-       function(x) round(c(mean = mean(x), sd = sd(x)), 2))       # 
+# ---- 3b. FINAL MODELS (WITHOUT THE MEAN) ------------------------------------
+# The final models are the "without mean" models from 3a. They are identical
+# to a refit, so they are reused instead of fitted again.
+m.fl.0  <- m.fl.0.nm                                       # FLI, unadjusted
+m.fl.1  <- m.fl.1.nm                                       # FLI, adjusted
+m.inc.0 <- m.inc.0.nm                                      # income, unadjusted
+m.inc.1 <- m.inc.1.nm                                      # income, adjusted
 
-# ---- 3. FIT THE MODELS ------------------------------------------------------
-# Formula objects are created at top level so update() (used inside
-# nominal_test) can find them later.
-f.fl.0  <- make_f("FLI_3item", rhs_unadj)                  # FLI_3item ~ iwisescore + iwise_mean + (1 | country_year)
-f.fl.1  <- make_f("FLI_3item", rhs_ctx)                    # FLI_3item ~ all covariates + (1 | country_year)
-f.inc.0 <- make_f("INCOME_5",  rhs_unadj)                  # same for income
-f.inc.1 <- make_f("INCOME_5",  rhs_ctx)                    # same for income
-
-m.fl.0 <- clmm(f.fl.0,                                     # model formula
-               data    = d.fl.cc,                          # complete-case FLI sample
-               weights = w_fit,                            # regression weights, rescaled to sum to N
-               link    = "logit",                          # cumulative logit = ordinal logistic
-               Hess    = TRUE,                             # Hessian, needed for standard errors
-               nAGQ    = 1)                                # Laplace approximation of the random effect
-m.fl.1  <- clmm(f.fl.1,  data = d.fl.cc,  weights = w_fit, link = "logit", Hess = TRUE, nAGQ = 1)  # FLI, adjusted
-m.inc.0 <- clmm(f.inc.0, data = d.inc.cc, weights = w_fit, link = "logit", Hess = TRUE, nAGQ = 1)  # income, unadjusted
-m.inc.1 <- clmm(f.inc.1, data = d.inc.cc, weights = w_fit, link = "logit", Hess = TRUE, nAGQ = 1)  # income, adjusted
-
-saveRDS(list(m.fl.0 = m.fl.0, m.fl.1 = m.fl.1,             # save fits so you don't refit every session
-             m.inc.0 = m.inc.0, m.inc.1 = m.inc.1),
+saveRDS(list(m.fl.0 = m.fl.0, m.fl.1 = m.fl.1,             # save final fits
+             m.inc.0 = m.inc.0, m.inc.1 = m.inc.1),  # + sensitivity models with the mean
         "models_attempt1.rds")
 
-summary(m.fl.1)                                            # full output; cond.H < 1e4 = no estimation problem
+# Estimation quality of the final models
+sapply(list(fl0 = m.fl.0, fl1 = m.fl.1,                    # condition number of the Hessian:
+            inc0 = m.inc.0, inc1 = m.inc.1),               # < ~1e4 fine, > ~1e6 problematic
+       function(m) summary(m)$condHess)
+bind_rows(tidy_or(m.fl.1, "FLI M1"), tidy_or(m.inc.1, "INC M1")) %>%
+  filter(is.na(se))                                        # 0 rows = all standard errors defined
+
+
+# ---- 3c. DOES THE CENTRING WORK? --------------------------------------------
+# The final models use centred covariates (05, Section 5.2). Here the same
+# models are refitted on the RAW covariates and compared.
+# First run (uncentred FLI M1): condHess NaN, SEs undefined, country-level
+# betas off (e.g. bas_rate_pp +0.068 vs -0.046 centred) = not converged.
+# Centred test model: condHess 71,488, individual-level betas unchanged.
+rhs_ctx_raw <- reduce(v.centre,                            # swap each centred name back to raw:
+                      ~ str_replace_all(.x, paste0("\\b", .y, "_c\\b"), .y),
+                      .init = rhs_ctx)                     # e.g. log_gdp_c -> log_gdp
+rhs_ctx_raw                                                # check: no "_c" names left
+
+m.fl.1.raw  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx_raw)  # FLI, adjusted, uncentred
+m.inc.1.raw <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx_raw)  # income, adjusted, uncentred
+# (warnings about the variance-covariance matrix are expected for the raw fits)
+
+# 3c-i. Condition number: centred should be clearly lower (and not NaN)
+sapply(list(fl_raw  = m.fl.1.raw,  fl_centred  = m.fl.1,
+            inc_raw = m.inc.1.raw, inc_centred = m.inc.1),
+       function(m) summary(m)$condHess)
+
+# 3c-ii. Log-likelihood: centred equal or higher = raw fit had not fully converged
+c(fl_raw  = logLik(m.fl.1.raw),  fl_centred  = logLik(m.fl.1),
+  inc_raw = logLik(m.inc.1.raw), inc_centred = logLik(m.inc.1))
+
+# 3c-iii. Betas side by side (same term order; row names from the raw model).
+#         Individual-level betas should match; country-level ones may differ
+#         if the raw fit did not converge.
+cbind(raw = m.fl.1.raw$beta,  centred = m.fl.1$beta)       # FLI
+cbind(raw = m.inc.1.raw$beta, centred = m.inc.1$beta)      # income
+
+# 3c-iv. Country-level ORs in the final (centred) models
+bind_rows(tidy_or(m.fl.1, "FLI M1"), tidy_or(m.inc.1, "INC M1")) %>%
+  filter(term %in% v.watch[-1]) %>%                        # country-level terms only
+  select(model, term, OR, lo, hi, p)
+
+summary(m.fl.1)                                            # full output
 summary(m.inc.1)                                           # same for income
 
 res <- bind_rows(tidy_or(m.fl.0,  "FLI M0"), tidy_or(m.fl.1,  "FLI M1"),   # all ORs in one table
                  tidy_or(m.inc.0, "INC M0"), tidy_or(m.inc.1, "INC M1"))
-res %>% filter(str_detect(term, "iwise")) %>% print()      # IWISE rows: within (iwisescore) and contextual (iwise_mean)
+res %>% filter(term == "iwisescore") %>% print()           # IWISE rows
 
 sapply(list(fl0 = m.fl.0, fl1 = m.fl.1,                    # ICC per model: share of variance
             inc0 = m.inc.0, inc1 = m.inc.1), icc)          # between country-years
 
-# ---- 3b. WITH VS WITHOUT THE COUNTRY-YEAR MEAN (MUNDLAK) --------------------  # >>> ADDED
-# iwise_mean = contextual effect (between minus within). If it is ~0, the
-# within and between effects are equal and the mean could be dropped.
-# Without the mean, iwisescore is a blend of within and between effects.
-rhs_unadj_nomean <- "iwisescore"                           # M0 without the mean: IWISE only
-rhs_ctx_nomean   <- str_remove(rhs_ctx, "\\+ iwise_mean ") # M1 without the mean
-rhs_ctx_nomean                                             # check: iwise_mean is gone, rest unchanged
- 
-m.fl.0.nm  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_unadj_nomean)  # FLI, unadjusted, no mean
-m.fl.1.nm  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx_nomean)    # FLI, adjusted, no mean
-m.inc.0.nm <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_unadj_nomean)  # income, unadjusted, no mean
-m.inc.1.nm <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx_nomean)    # income, adjusted, no mean
- 
-# 3b-i. IWISE odds ratios side by side
-bind_rows(tidy_or(m.fl.0,  "FLI M0 with mean"),  tidy_or(m.fl.0.nm,  "FLI M0 without mean"),
-          tidy_or(m.fl.1,  "FLI M1 with mean"),  tidy_or(m.fl.1.nm,  "FLI M1 without mean"),
-          tidy_or(m.inc.0, "INC M0 with mean"),  tidy_or(m.inc.0.nm, "INC M0 without mean"),
-          tidy_or(m.inc.1, "INC M1 with mean"),  tidy_or(m.inc.1.nm, "INC M1 without mean")) %>%
-  filter(term %in% c("iwisescore", "iwise_mean")) %>%      # IWISE rows only
-  select(model, term, OR, lo, hi, p) %>%                   # OR, 95% CI, p-value
-  print()                                                  # similar iwisescore ORs = the mean barely matters
- 
-# 3b-ii. Likelihood-ratio test: does adding the mean improve the fit?
-#        Small p = within and between effects differ, so keep the mean
-#        (Hedeker 2015, p. 9; equivalent to the iwise_mean Wald test).
-anova(m.fl.0.nm,  m.fl.0)                                  # FLI, unadjusted
-anova(m.fl.1.nm,  m.fl.1)                                  # FLI, adjusted
-anova(m.inc.0.nm, m.inc.0)                                 # income, unadjusted
-anova(m.inc.1.nm, m.inc.1)                                 # income, adjusted
- 
+
 # =============================================================================
 # CHECKS
 # brant(), nominal_test(), Cook's distance and the Lipsitz / Pulkstenis-
@@ -148,6 +190,7 @@ anova(m.inc.1.nm, m.inc.1)                                 # income, adjusted
 # weights. Refits (checks 2 and 3) use the real multilevel model.
 # =============================================================================
 
+#each test gets a single-level stand-in: the same predictors, sample (and where possible) weights, just without the ransdom intercept
 f.fl.fix  <- make_f("FLI_3item", rhs_ctx, random = FALSE)  # FLI formula without random intercept
 f.inc.fix <- make_f("INCOME_5",  rhs_ctx, random = FALSE)  # income formula without random intercept
 
