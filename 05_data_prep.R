@@ -16,6 +16,8 @@
 #   3   Variable groups
 #   4   Variable types and level ordering
 #   5   Derived variables
+#       5.1 Country mean IWISE (sensitivity only)
+#       5.2 Centred covariates (numerical stability)
 #   6   Country-year dataset (for Checks 4c-bis and 7c)
 #   7   Split into analytic samples
 #   8   Per-model variable lists and model formulas
@@ -280,7 +282,7 @@ summary(d.iwise$daly_enteric_model)   # check: plausible range, no -Inf
 # (LR p = 0.018, dAIC = 4). Excluded for parsimony.
 # Still computed here because it is used for:
 #   - the country-year dataset (Section 6)
-#   - the sensitivity analysis WITH the mean (07, Section 3b)
+#   - the sensitivity analysis WITH the mean (07, Section 3a)
 #
 # If included: model uses RAW iwisescore + country mean:
 #   iwisescore coefficient = within-country effect
@@ -301,6 +303,36 @@ d.iwise <- d.iwise %>%
     .ok        = NULL
   ) %>%
   ungroup()
+
+
+# ---- 5.2 CENTRED COVARIATES (numerical stability) ---------------------------
+# Uncentred, 0 lies far outside the data (e.g. log_gdp = 0 means a GDP of $1).
+# This made the clmm() Hessian near-singular: NaN standard errors and wrong
+# country-level estimates in the adjusted FLI model (condHess NaN -> 71,488
+# after centring). Centring changes only the thresholds; all ORs stay the same.
+# Meaning of 0 after centring = sample average:
+#   log_gdp_c, daly_enteric_model_c : geometric mean of GDP / DALY rate
+#   wgi_ge_sc_c                     : average government effectiveness
+#   hhsize_c                        : average household size
+# NOT centred: iwisescore (0 = no water insecurity, meaningful and in the data)
+#              bas_rate_pp (0 = no change, meaningful; mean 0.55, SD 0.63)
+# New "_c" columns, so the raw variables stay available for descriptives and
+# the country-year dataset (Section 6).
+
+v.centre <- c("log_gdp", v.gbd.model, v.wgi.main, "hhsize")       # covariates to centre
+
+d.iwise <- d.iwise %>%
+  mutate(across(all_of(v.centre),
+                ~ .x - mean(.x, na.rm = TRUE),                    # value minus sample mean
+                .names = "{.col}_c"))                             # e.g. log_gdp -> log_gdp_c
+
+# Check: centred means should be ~0, SDs identical to the raw variables
+d.iwise %>%
+  summarise(across(all_of(c(v.centre, paste0(v.centre, "_c"))),
+                   list(mean = ~ round(mean(.x, na.rm = TRUE), 3),
+                        sd   = ~ round(sd(.x,   na.rm = TRUE), 3)))) %>%
+  pivot_longer(everything()) %>%
+  print(n = Inf)
 
  
 # Ethiopia income classification
@@ -351,22 +383,24 @@ d.inc <- d.iwise %>%
 # The FLI items are deliberately NOT included: FLI_3item already encodes its
 # eligibility rule. Only the main WGI (GE) is included; sensitivity models
 # with other WGIs define their own complete-case sample.
+# iwise_mean is not included (see Section 5.1).
+# The lists keep the RAW names: the centred "_c" versions are missing in
+# exactly the same rows, so the cc flag is unchanged.
  
-# >>> CHANGED: "iwise_mean" removed from both lists (see Section 5.1)
 v.model.fl  <- c("FLI_3item", v.main, "hhsize", v.index.model, "log_gdp",
                  v.wgi.main, v.jmp, v.gbd.model, v.categorical, v.cluster, v.weight)
 v.model.inc <- c("INCOME_5",  v.main, "hhsize", v.index.model, "log_gdp",
                  v.wgi.main, v.jmp, v.gbd.model, v.categorical, v.cluster, v.weight)
-# <<< END CHANGED
  
 rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
-                 "maritalstatus + hhsize + employment + education +",
+                 "maritalstatus + hhsize_c + employment + education +",
                  v.index.model) #right hand side of the model
+
  
 # Contextual version (with country level variables). ONE governance term only.
-# >>> CHANGED: "+ iwise_mean" removed
-rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd.model)
-# <<< END CHANGED
+rhs_ctx <- paste(rhs, "+ log_gdp_c +", paste0(v.wgi.main, "_c"), "+", v.jmp, "+",
+                 paste0(v.gbd.model, "_c"))
+rhs_ctx                                                           # check: _c names, no iwise_mean
 
  
  
@@ -425,6 +459,7 @@ saveRDS(list(d.iwise       = d.iwise,
              v.jmp.all     = v.jmp.all,
              v.gbd         = v.gbd,
              v.gbd.model   = v.gbd.model,
+             v.centre      = v.centre,      # >>> ADDED: centred covariates (raw names)
              v.indices     = v.indices,
              v.index.model = v.index.model,
              v.cluster     = v.cluster,
