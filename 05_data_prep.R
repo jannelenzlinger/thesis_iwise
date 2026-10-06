@@ -1,5 +1,5 @@
 # =============================================================================
-# 01 DATA PREPARATION  |  Ordinal logistic regression
+# 05 DATA PREPARATION  |  Ordinal logistic regression
 # Dataset: iwise_all_contextual
 # Outcomes: FLI_3item (Financial Life Index, 3-item), INCOME_5 (Income Quintiles)
 # Main predictor: iwisescore (Water Insecurity Experiences, 0-36)
@@ -164,11 +164,30 @@ v.jmp.all <- c("bas_rate_pp", "bas_level", "sm_level",
 # 2024/2025 surveys matched to 2023, see gbd_carried_fwd).
 v.gbd <- "daly_enteric_rate"   # RAW rate: descriptives and checks only
 
-# >>> ADDED: model version of the DALY rate (natural log, created in Section 5).
+# check distribution for right skew and range to avoid modelling issue (solution:log-transformation)
+d.iwise %>%
+  summarise(n      = sum(!is.na(daly_enteric_rate)),                 # respondents with a value
+            mean   = mean(daly_enteric_rate, na.rm = TRUE),          # mean
+            sd     = sd(daly_enteric_rate, na.rm = TRUE),            # standard deviation
+            cv     = sd / mean,                                      # > 1 = SD larger than mean
+            median = median(daly_enteric_rate, na.rm = TRUE),        # median < mean = right skew
+            min    = min(daly_enteric_rate, na.rm = TRUE),           # must be > 0 for the log
+            max    = max(daly_enteric_rate, na.rm = TRUE),           # size of the tail
+            n_unique = n_distinct(daly_enteric_rate, na.rm = TRUE))  # explains the spikes
+d.iwise %>%
+  filter(!is.na(daly_enteric_rate)) %>%
+  ggplot(aes(daly_enteric_rate)) +
+  geom_histogram(bins=500, fill = "steelblue", colour = "white") +
+  labs(x = "Enteric DALYs per 100,000", y = "Respondents",
+       title = "Enteric DALY rate (raw)") +
+  theme_minimal()
+
+# model version of the DALY rate (natural log, created in Section 5).
 # v.gbd stays the raw rate, because Section 4 converts v.continuous to numeric
-# before Section 5 creates this variable.
+# before Section 5 creates this variable. --> this section only names
+
 v.gbd.model <- "daly_enteric_model"
-# <<< END ADDED
+
 
 
 v.continuous  <- c("iwisescore", "hhsize", "gdp_pc_ppp", v.wgi, v.jmp, v.gbd)
@@ -229,17 +248,14 @@ d.iwise <- d.iwise %>%
     n_fli_answered = rowSums(!is.na(across(all_of(v.fli.items)))),
     has_wp88       = !is.na(WP88),
 
-    # >>> CHANGED (comment only): corrected interpretation
     # GDP is right-skewed; OR per 1-unit log = per 2.72-fold increase in GDP.
-    # <<< END CHANGED
     log_gdp = log(gdp_pc_ppp),
 
-    # >>> ADDED: DALY rate is right-skewed (mean 592, SD 699) and on a much
+    # DALY rate is right-skewed (mean 592, SD 699) and on a much
     # larger scale than the other predictors, which caused the clmm()
     # "very large eigenvalue" warning. Natural log, as for GDP.
     # OR per 1-unit log = per 2.72-fold increase in the DALY rate.
     daly_enteric_model = log(daly_enteric_rate),
-    # <<< END ADDED
 
     # Standard IWISE bands (Young et al. 2019), in case linearity fails.
     iwise_cat = cut(iwisescore, breaks = c(-Inf, 2, 11, 23, Inf),
@@ -251,17 +267,26 @@ d.iwise <- d.iwise %>%
            .names = "{.col}_num")
   )
 
-# >>> ADDED: the log is undefined for 0 or negative values, so check first.
-stopifnot(min(d.iwise$daly_enteric_rate, na.rm = TRUE) > 0)
+# check that the DALY log works since it is undefined for 0 or negative values, so check first.
+stopifnot(min(d.iwise$daly_enteric_rate, na.rm = TRUE) > 0) #fine
 summary(d.iwise$daly_enteric_model)   # check: plausible range, no -Inf
-# <<< END ADDED
+
 
 # ---- 5.1 COUNTRY MEAN IWISE (within/between split, Mundlak) -----------------
-# Model uses RAW iwisescore + country mean:
+# Comment: iwise_mean is NO LONGER in the main models.
+# Adding it did not change the within-country IWISE association in the
+# adjusted models (FLI: OR 0.967; income: OR 0.982, with and without the mean)
+# and did not improve fit for FLI (LR p = 0.48), only marginally for income
+# (LR p = 0.018, dAIC = 4). Excluded for parsimony.
+# Still computed here because it is used for:
+#   - the country-year dataset (Section 6)
+#   - the sensitivity analysis WITH the mean (07, Section 3b)
+#
+# If included: model uses RAW iwisescore + country mean:
 #   iwisescore coefficient = within-country effect
 #   iwise_mean coefficient = contextual effect (between minus within)
 #   between-country effect = sum of the two
-# Computed here, BEFORE the split, so the mean uses every respondent with an
+# Computed BEFORE the split, so the mean uses every respondent with an
 # IWISE score, not only each model's complete cases.
 # Weight = wgt2: a within-country quantity (READ_ME: country-specific analysis,
 # correct India weights). Same weight as the country-year data in Section 6.
@@ -327,10 +352,10 @@ d.inc <- d.iwise %>%
 # eligibility rule. Only the main WGI (GE) is included; sensitivity models
 # with other WGIs define their own complete-case sample.
  
-# >>> CHANGED: v.gbd -> v.gbd.model (log DALY rate) in both lists and rhs_ctx
-v.model.fl  <- c("FLI_3item", v.main, "iwise_mean", "hhsize", v.index.model, "log_gdp",
+# >>> CHANGED: "iwise_mean" removed from both lists (see Section 5.1)
+v.model.fl  <- c("FLI_3item", v.main, "hhsize", v.index.model, "log_gdp",
                  v.wgi.main, v.jmp, v.gbd.model, v.categorical, v.cluster, v.weight)
-v.model.inc <- c("INCOME_5",  v.main, "iwise_mean", "hhsize", v.index.model, "log_gdp",
+v.model.inc <- c("INCOME_5",  v.main, "hhsize", v.index.model, "log_gdp",
                  v.wgi.main, v.jmp, v.gbd.model, v.categorical, v.cluster, v.weight)
 # <<< END CHANGED
  
@@ -339,9 +364,10 @@ rhs     <- paste("iwisescore + female + urban_imp + age_gp_profile +",
                  v.index.model) #right hand side of the model
  
 # Contextual version (with country level variables). ONE governance term only.
-# >>> CHANGED: v.gbd -> v.gbd.model
-rhs_ctx <- paste(rhs, "+ iwise_mean + log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd.model)
+# >>> CHANGED: "+ iwise_mean" removed
+rhs_ctx <- paste(rhs, "+ log_gdp +", v.wgi.main, "+", v.jmp, "+", v.gbd.model)
 # <<< END CHANGED
+
  
  
 # ---- 9. COMPLETE-CASE FLAGS AND MODEL WEIGHTS -------------------------------
@@ -398,7 +424,7 @@ saveRDS(list(d.iwise       = d.iwise,
              v.jmp         = v.jmp,
              v.jmp.all     = v.jmp.all,
              v.gbd         = v.gbd,
-             v.gbd.model   = v.gbd.model,   # >>> ADDED
+             v.gbd.model   = v.gbd.model,
              v.indices     = v.indices,
              v.index.model = v.index.model,
              v.cluster     = v.cluster,
