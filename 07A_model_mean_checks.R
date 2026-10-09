@@ -61,6 +61,7 @@ re_slope  <- "(1 + iwisescore | country_year)"             # + random IWISE slop
 # states it explicitly (re = re_term / re = re_slope). Without it, the
 # FINAL structure re_final is used (set in 3e), so all checks follow
 # the decision made in 3d automatically.
+
 make_f <- function(y, rhs, random = TRUE, re = re_final) { # turns text into a model formula
   as.formula(paste(y, "~", rhs,                            # outcome ~ predictors
                    if (random) paste("+", re) else ""))    # + random effects (or none)
@@ -83,6 +84,13 @@ tidy_or <- function(m, label) {                            # odds-ratio table fo
          p     = co[, 4])                                  # p-value
 }
 
+load_models <- function(file) {                            # restores every model in an .rds file
+  obj <- readRDS(file)                                     # named list of models
+  list2env(obj, envir = globalenv())                       # each name becomes an object again
+  message("Loaded from ", file, ": ", paste(names(obj), collapse = ", "))
+  invisible(names(obj))
+}
+
 # with a random slope, VarCorr() is a 2x2 matrix; [1, 1] is the
 # intercept variance. The ICC then applies at iwisescore = 0 (no water
 # insecurity), because between-country variance changes with IWISE.
@@ -90,6 +98,24 @@ icc <- function(m) {                                       # latent-scale ICC fr
   s2 <- VarCorr(m)[[1]][1, 1]                              # random-intercept variance
   s2 / (s2 + pi^2 / 3)                                     # pi^2/3 = level-1 variance of the logistic
 }
+
+
+# ---- RELOAD: use instead of refitting Section 3 ------------------------------
+use_slope <- TRUE                                          # must match your decision in 3e
+re_final  <- if (use_slope) re_slope else re_term          # default structure for fit_clmm()
+
+load_models("models_mundlak.rds")                          # 3a: m.*.nm, m.*.wm
+m.fl.0.ri  <- m.fl.0.nm                                    # 3b: instant, just renaming
+m.fl.1.ri  <- m.fl.1.nm
+m.inc.0.ri <- m.inc.0.nm
+m.inc.1.ri <- m.inc.1.nm
+
+load_models("models_random_slope.rds")                     # 3d: m.*.rs
+load_models("models_final.rds")                            # 3e: m.fl.0, m.fl.1, m.inc.0, m.inc.1
+load_models("models_random_slope.rds")                     # 3d: m.*.rs
+load_models("models_slope_check.rds")                      # 3d-ii: m.fl.1.rs.chk
+# load_models("models_unnormalised.rds")                   # Check 5, if needed
+# load_models("loo_attempt1.rds")                          # Check 3c: loo.fl, loo.inc
 
 
 # ---- 3a. IS THE COUNTRY-YEAR MEAN NEEDED? (MUNDLAK) -------------------------
@@ -118,10 +144,13 @@ bind_rows(tidy_or(m.fl.0.wm,  "FLI M0 with mean"), tidy_or(m.fl.0.nm,  "FLI M0 w
 # 3a-ii. Likelihood-ratio test: does adding the mean improve the fit?
 #        (Hedeker 2015, p. 9). Small p = within and between effects differ.
 anova(m.fl.0.nm,  m.fl.0.wm)                               # FLI, unadjusted   (p = 0.001)
-anova(m.fl.1.nm,  m.fl.1.wm)                               # FLI, adjusted     (p = 0.48)
+anova(m.fl.1.nm,  m.fl.1.wm)                               # FLI, adjusted     (p = 0.9346)
 anova(m.inc.0.nm, m.inc.0.wm)                              # income, unadjusted (p < 0.001)
-anova(m.inc.1.nm, m.inc.1.wm)                              # income, adjusted  (p = 0.018, dAIC = 4)
+anova(m.inc.1.nm, m.inc.1.wm)                              # income, adjusted  (p = 0.013, dAIC = 4)
 
+saveRDS(mget(c("m.fl.0.nm", "m.fl.0.wm", "m.fl.1.nm", "m.fl.1.wm",       # mget() returns a named list
+               "m.inc.0.nm", "m.inc.0.wm", "m.inc.1.nm", "m.inc.1.wm")),
+        "models_mundlak.rds")
 # =============================================================================
 # DECISION: EXCLUDE MEAN
 # The iwisescore OR is unchanged in the adjusted models (FLI 0.967, income
@@ -178,100 +207,187 @@ c(fl_raw  = logLik(m.fl.1.raw),  fl_centred  = logLik(m.fl.1.ri),
 cbind(raw = m.fl.1.raw$beta,  centred = m.fl.1.ri$beta)    # FLI
 cbind(raw = m.inc.1.raw$beta, centred = m.inc.1.ri$beta)   # income
 
+saveRDS(mget(c("m.fl.1.raw", "m.inc.1.raw")), "models_uncentred.rds")
 
 # ---- 3d. RANDOM IWISE SLOPE --------------------------------------------------
 # Same models as 3b, plus a random IWISE slope (re = re_slope): each
 # country-year has its own IWISE effect, spread around the average (fixed)
 # effect with SD sigma_slope. Adds 2 parameters: slope variance and the
 # intercept-slope correlation. Slower; may warn (see 3d-i).
-m.fl.0.rs  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_unadj, re = re_slope)  # FLI, unadjusted
-m.fl.1.rs  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx,   re = re_slope)  # FLI, adjusted
-m.inc.0.rs <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_unadj, re = re_slope)  # income, unadjusted
-m.inc.1.rs <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx,   re = re_slope)  # income, adjusted
 
-saveRDS(list(m.fl.0.rs = m.fl.0.rs, m.fl.1.rs = m.fl.1.rs,  # save: slow to refit
-             m.inc.0.rs = m.inc.0.rs, m.inc.1.rs = m.inc.1.rs),
-        "models_random_slope.rds")
+# ---- 3d. RANDOM IWISE SLOPE --------------------------------------------------
+# Question: does the IWISE effect differ between country-years?
+# A random slope gives each country-year its own IWISE effect, spread around
+# the average (fixed) effect. Compared with 3b it adds 2 parameters: the slope
+# SD and the intercept-slope correlation.
+#
+#   3d-1  Fit the four slope models, or load them if already saved
+#   3d-2  Did the fits work?      estimation quality + plausible values
+#   3d-3  Are the fits stable?    same result with another optimiser?
+#   3d-4  Is the slope needed?    boundary-corrected LR test + AIC   <- THE test
+#   3d-5  What does it change?    average OR, spread, plot           (description)
+#   3d-6  Decision                -> used in 3e
+#
+# 3d-2 and 3d-3 only check that the slope models can be trusted. Only 3d-4
+# tests whether the slope is needed. 3d-5 describes the result.
+# Needs the random-intercept models from 3b (m.*.ri) in memory.
 
-# 3d-i. Estimation quality. First FLI run: condHess 12,993, max gradient 20.5.
-sapply(list(fl0 = m.fl.0.rs, fl1 = m.fl.1.rs, inc0 = m.inc.0.rs, inc1 = m.inc.1.rs),
-       function(m) c(condHess = summary(m)$condHess,       # < ~1e5 fine
-                     max_grad = max(abs(m$gradient))))     # close to 0 = converged
 
-# 3d-ii. Stability: refit with another optimiser (package ucminf needed).
-#        Same logLik, betas and slope SD = the warnings did not matter.
-m.fl.1.rs.chk <- clmm(make_f("FLI_3item", rhs_ctx, re = re_slope),
-                      data = d.fl.cc, weights = w_fit, link = "logit",
-                      Hess = TRUE, nAGQ = 1,
-                      control = clmm.control(method = "ucminf"))
-c(original = logLik(m.fl.1.rs), check = logLik(m.fl.1.rs.chk))
-cbind(original = m.fl.1.rs$beta, check = m.fl.1.rs.chk$beta)
+# m.fl.0.rs  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_unadj, re = re_slope)  # FLI, unadjusted
+# m.fl.1.rs  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx,   re = re_slope)  # FLI, adjusted
+# m.inc.0.rs <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_unadj, re = re_slope)  # income, unadjusted
+# m.inc.1.rs <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx,   re = re_slope)  # income, adjusted
 
-# 3d-iii. Variance components: slope SD and its correlation with the intercept
-#         First FLI run: slope SD 0.019, correlation -0.06.
-VarCorr(m.fl.1.rs)                                         # FLI
-VarCorr(m.inc.1.rs)                                        # income
-VarCorr(m.fl.1.rs.chk)                                     # stability check: similar slope SD?
+# saveRDS(list(m.fl.0.rs = m.fl.0.rs, m.fl.1.rs = m.fl.1.rs,  # save: slow to refit
+#             m.inc.0.rs = m.inc.0.rs, m.inc.1.rs = m.inc.1.rs),
+#        "models_random_slope.rds")
 
-# 3d-iv. Likelihood-ratio test: does the random slope improve the fit?
-#        A variance cannot be < 0, so the usual p-value is too conservative.
-#        Corrected p = 50:50 mixture of chi2(1) and chi2(2) (Snijders & Bosker).
-lr_slope <- function(m.ri, m.rs) {
-  lr <- as.numeric(2 * (logLik(m.rs) - logLik(m.ri)))      # LR statistic
-  c(LR = lr,
+
+
+stopifnot(exists("m.fl.0.ri"), exists("m.fl.1.ri"),        # 3b models must be loaded
+          exists("m.inc.0.ri"), exists("m.inc.1.ri"))
+
+
+# ---- 3d-1. FIT OR LOAD -------------------------------------------------------
+# Loads the saved models if the file exists, then fits only what is missing.
+# To force a refit: delete the .rds file and rm() the model objects.
+f.rs <- "models_random_slope.rds"
+if (file.exists(f.rs)) load_models(f.rs)
+
+if (!exists("m.fl.0.rs"))  m.fl.0.rs  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_unadj, re = re_slope)
+if (!exists("m.fl.1.rs"))  m.fl.1.rs  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx,   re = re_slope)
+if (!exists("m.inc.0.rs")) m.inc.0.rs <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_unadj, re = re_slope)
+if (!exists("m.inc.1.rs")) m.inc.1.rs <- fit_clmm(d.inc.cc, "INCOME_5",  rhs_ctx,   re = re_slope)
+
+saveRDS(mget(c("m.fl.0.rs", "m.fl.1.rs", "m.inc.0.rs", "m.inc.1.rs")), f.rs)
+
+# Each slope model next to its intercept-only version (used in 3d-2 to 3d-5)
+pairs <- list(fl0  = list(ri = m.fl.0.ri,  rs = m.fl.0.rs),
+              fl1  = list(ri = m.fl.1.ri,  rs = m.fl.1.rs),
+              inc0 = list(ri = m.inc.0.ri, rs = m.inc.0.rs),
+              inc1 = list(ri = m.inc.1.ri, rs = m.inc.1.rs))
+
+
+# ---- 3d-2. DID THE FITS WORK? ------------------------------------------------
+# One column per model. A fit can only be trusted if ALL rows look fine.
+fit_quality <- function(p) {
+  vc  <- VarCorr(p$rs)[[1]]                                # 2x2 random-effects matrix
+  sds <- attr(vc, "stddev")
+  c(condHess    = suppressWarnings(summary(p$rs)$condHess),  # NaN or > 1e6 = not identified
+    max_grad    = max(abs(p$rs$gradient)),                 # large = may not have converged
+    logLik_gain = as.numeric(logLik(p$rs) - logLik(p$ri)), # must be >= 0 (ri is nested in rs)
+    sd_int_ri   = attr(VarCorr(p$ri)[[1]], "stddev")[[1]], # intercept SD without slope ...
+    sd_int_rs   = sds[[1]],                                # ... and with: should be similar
+    sd_slope    = sds[["iwisescore"]],                     # plausible: ~0.01-0.05 per point
+    corr        = attr(vc, "correlation")[1, 2])           # intercept-slope correlation
+}
+round(sapply(pairs, fit_quality), 4)
+
+# RESULT: fl0, fl1, inc1 fine (slope SD 0.019 FLI, 0.016 income).
+#   inc0 FAILED: condHess NaN, gradient 158, slope SD 0.53, intercept SD
+#   0.10 -> 0.56. Implausible; unadjusted income has almost no between-
+#   country variance, so the slope cannot be identified. -> inc0 dropped below.
+
+
+# ---- 3d-3. ARE THE FITS STABLE? ----------------------------------------------
+# Refit the adjusted models with another optimiser (ucminf). If both land on
+# the same logLik, betas and SDs, the original fit is a real maximum.
+fit_ucminf <- function(data, y, rhs, re = re_slope) {      # same as fit_clmm(), other optimiser
+  clmm(make_f(y, rhs, re = re), data = data, weights = w_fit, link = "logit",
+       Hess = TRUE, nAGQ = 1, control = clmm.control(method = "ucminf"))
+}
+
+f.chk <- "models_slope_check.rds"                          # fit or load, as in 3d-1
+if (file.exists(f.chk)) load_models(f.chk)
+if (!exists("m.fl.1.rs.chk"))  m.fl.1.rs.chk  <- fit_ucminf(d.fl.cc,  "FLI_3item", rhs_ctx)
+if (!exists("m.inc.1.rs.chk")) m.inc.1.rs.chk <- fit_ucminf(d.inc.cc, "INCOME_5",  rhs_ctx)
+saveRDS(mget(c("m.fl.1.rs.chk", "m.inc.1.rs.chk")), f.chk)
+
+cmp_fits <- function(m1, m2) {                             # how far apart are two fits?
+  c(logLik_diff   = as.numeric(logLik(m2) - logLik(m1)),   # ~0 = same maximum
+    max_beta_diff = max(abs(m1$beta - m2$beta)),           # < ~0.001 = same estimates
+    max_sd_diff   = max(abs(attr(VarCorr(m1)[[1]], "stddev") -
+                            attr(VarCorr(m2)[[1]], "stddev"))))  # < ~0.001 = same SDs
+}
+round(cbind(fl1  = cmp_fits(m.fl.1.rs,  m.fl.1.rs.chk),
+            inc1 = cmp_fits(m.inc.1.rs, m.inc.1.rs.chk)), 5)
+
+# RESULT: 0 difference, results stable
+
+
+# ---- 3d-4. IS THE SLOPE NEEDED? -----------------------------------
+# LR test: slope model vs intercept-only model (2 extra parameters).
+# Under H0 the slope variance is 0, the edge of its possible values, so the
+# usual chi2(2) p-value is too large. Corrected p = 50:50 mix of chi2(1) and
+# chi2(2) (Snijders & Bosker). dAIC < 0 = slope model is better.
+lr_slope <- function(p) {
+  lr <- as.numeric(2 * (logLik(p$rs) - logLik(p$ri)))      # LR statistic
+  c(LR      = lr,
     p_naive = pchisq(lr, df = 2, lower.tail = FALSE),      # standard test (too conservative)
     p_mix   = 0.5 * pchisq(lr, 1, lower.tail = FALSE) +    # boundary-corrected p-value
-              0.5 * pchisq(lr, 2, lower.tail = FALSE))
+              0.5 * pchisq(lr, 2, lower.tail = FALSE),
+    dAIC    = AIC(p$rs) - AIC(p$ri))                       # < 0 = slope better
 }
-lr_slope(m.fl.1.ri,  m.fl.1.rs)                            # FLI
-lr_slope(m.inc.1.ri, m.inc.1.rs)                           # income
-AIC(m.fl.1.ri, m.fl.1.rs); AIC(m.inc.1.ri, m.inc.1.rs)     # lower = better
+round(sapply(pairs[c("fl0", "fl1", "inc1")], lr_slope), 4)  # inc0 left out: fit failed (3d-2)
 
-# 3d-v. Average IWISE OR: intercept only vs random slope
-bind_rows(tidy_or(m.fl.1.ri,  "FLI intercept only"), tidy_or(m.fl.1.rs,  "FLI + slope"),
-          tidy_or(m.inc.1.ri, "INC intercept only"), tidy_or(m.inc.1.rs, "INC + slope")) %>%
+# RESULT: random slope clearly improves fit in fl0, fl1, inc1
+#   (LR 189-259, boundary-corrected p < 0.001, dAIC -183 to -255).
+#   DECISION: keep the slope (use_slope <- TRUE); inc0 intercept only.
+
+
+# ---- 3d-5. WHAT DOES THE SLOPE CHANGE? (DESCRIPTION, NO TEST) -----------------
+# a. Average IWISE OR with and without the slope. CI usually wider with it.
+imap_dfr(pairs[c("fl1", "inc1")], function(p, nm)
+  bind_rows(tidy_or(p$ri, paste(nm, "intercept only")),
+            tidy_or(p$rs, paste(nm, "+ slope")))) %>%
   filter(term == "iwisescore") %>%
-  select(model, OR, lo, hi, p)                             # CI usually wider with the slope
+  select(model, OR, lo, hi, p)
+# RESULT: average IWISE OR stable with the slope (FLI 0.967 -> 0.964,
+#   income 0.982 -> 0.981); CIs ~3x wider, as they now include between-
+#   country variation in the effect.
 
-# 3d-vi. Spread of the IWISE effect across country-years
-slope_range <- function(m) {                               # 95% of country-year IWISE ORs lie here
+
+# b. Spread: range in which 95% of the country-year IWISE ORs lie
+slope_range <- function(m) {
   b  <- m$beta[["iwisescore"]]                             # average (fixed) IWISE effect
   sd <- attr(VarCorr(m)[[1]], "stddev")[["iwisescore"]]    # SD of the country-year slopes
-  exp(c(average = b, lower95 = b - 1.96 * sd, upper95 = b + 1.96 * sd))  # as ORs per IWISE point
+  exp(c(average = b, lower95 = b - 1.96 * sd, upper95 = b + 1.96 * sd))  # ORs per IWISE point
 }
-slope_range(m.fl.1.rs)                                     # FLI
-slope_range(m.inc.1.rs)                                    # income
+round(sapply(list(fl1 = m.fl.1.rs, inc1 = m.inc.1.rs), slope_range), 3)
+# RESULT: 95% of country-year IWISE ORs lie within 0.929-0.999 (FLI) and
+#   0.950-1.012 (income). FLI: negative everywhere, strength varies.
+#   Income: mostly negative, around zero in some country-years.
 
-# 3d-vii. Country-year-specific IWISE ORs (fixed effect + random deviation)
-cy_slopes <- function(m, data) {
-  re <- ranef(m)$country_year                              # random deviations per country-year
-  tibble(country_year = rownames(re),
-         OR = exp(m$beta[["iwisescore"]] + re[["iwisescore"]])) %>%  # country-year IWISE OR
-    left_join(data %>% distinct(country_year, countrynew) %>%        # add country names
+
+# c. Caterpillar plot: each country-year's own IWISE OR (average + deviation).
+#    ranef() values are shrunken toward 0, so the plot slightly understates
+#    the spread; b. is the better summary.
+plot_cy_slopes <- function(m, data, title) {
+  re <- ranef(m)$country_year                              # deviations per country-year
+  cy <- tibble(country_year = rownames(re),
+               OR = exp(m$beta[["iwisescore"]] + re[["iwisescore"]])) %>%
+    left_join(data %>% distinct(country_year, countrynew) %>%   # add country names
                 mutate(country_year = as.character(country_year)),
               by = "country_year")
+  ggplot(cy, aes(OR, reorder(countrynew, OR))) +
+    geom_vline(xintercept = exp(m$beta[["iwisescore"]]), colour = "red") +  # average OR
+    geom_vline(xintercept = 1, colour = "grey60", linetype = 2) +          # no effect
+    geom_point(size = 1) +
+    labs(title = title, x = "OR per IWISE point", y = NULL) +
+    theme_minimal() + theme(axis.text.y = element_text(size = 5))
 }
-cy.fl <- cy_slopes(m.fl.1.rs, d.fl.cc)                     # FLI
-ggplot(cy.fl, aes(OR, reorder(countrynew, OR))) +          # caterpillar plot
-  geom_vline(xintercept = exp(m.fl.1.rs$beta[["iwisescore"]]), colour = "red") +  # average OR
-  geom_vline(xintercept = 1, colour = "grey60", linetype = 2) +                  # no effect
-  geom_point(size = 1) +
-  labs(title = "FLI: IWISE OR per country-year (random slope)",
-       x = "OR per IWISE point", y = NULL) +
-  theme_minimal() + theme(axis.text.y = element_text(size = 5))
+plot_cy_slopes(m.fl.1.rs,  d.fl.cc,  "FLI: IWISE OR per country-year")
+plot_cy_slopes(m.inc.1.rs, d.inc.cc, "Income: IWISE OR per country-year")
 
 
-# ---- 3e. FINAL MODELS --------------------------------------------------------
-# DECISION after 3d: keep the random slope if it improves fit (3d-iv), its SD
-# is meaningful (3d-vi) and the fit is stable (3d-i, 3d-ii).
-# use_slope sets the structure for the final models AND for every refit in
-# the checks (fit_clmm() default).
+# ---- 3e. FINAL MODELS  --------
+# Keep the random slope for fl0, fl1 and inc1, inc0 always stays intercept only (slope not identifiable).
 use_slope <- TRUE                                          # FALSE = random intercept only
 re_final  <- if (use_slope) re_slope else re_term          # used by fit_clmm() from here on
 
 m.fl.0  <- if (use_slope) m.fl.0.rs  else m.fl.0.ri        # FLI, unadjusted
 m.fl.1  <- if (use_slope) m.fl.1.rs  else m.fl.1.ri        # FLI, adjusted
-m.inc.0 <- if (use_slope) m.inc.0.rs else m.inc.0.ri       # income, unadjusted
+m.inc.0 <- m.inc.0.ri                                      # income, unadjusted: always intercept only (3d-2)
 m.inc.1 <- if (use_slope) m.inc.1.rs else m.inc.1.ri       # income, adjusted
 
 saveRDS(list(m.fl.0 = m.fl.0, m.fl.1 = m.fl.1,             # save final fits
@@ -294,6 +410,7 @@ sapply(list(fl0 = m.fl.0, fl1 = m.fl.1,                    # ICC (with random sl
             inc0 = m.inc.0, inc1 = m.inc.1), icc)
 
 
+
 # =============================================================================
 # CHECKS
 # brant(), nominal_test(), Cook's distance and the Lipsitz / Pulkstenis-
@@ -314,8 +431,81 @@ c.inc <- clm(f.inc.fix, data = d.inc.cc, weights = w_fit, link = "logit")  # wei
 p.fl  <- polr(f.fl.fix,  data = d.fl.cc,  method = "logistic", Hess = TRUE)  # polr stand-in (unweighted:
 p.inc <- polr(f.inc.fix, data = d.inc.cc, method = "logistic", Hess = TRUE)  # brant/generalhoslem ignore weights)
 
+saveRDS(mget(c("c.fl", "c.inc", "p.fl", "p.inc", "cuts.fl")), "models_standins.rds")
 
-# ---- CHECK 1: PROPORTIONAL ODDS ---------------------------------------------
+# load_models("models_standins.rds")                         # checks: c.*, p.*, cuts.*
+
+# ---- CHECK 1. WEIGHT NORMALISATION: Sensivitity check -------------------------------
+# w_fit = v.weight divided by its mean in the complete cases (05, Section 9),
+# so the weights sum to the model N. Here the final adjusted models are
+# refitted with the weight as it is (normalised over the full dataset, not
+# the model sample) and compared with the final models from 3e.
+# Expectation: clmm() reads weights as counts. Multiplying all weights by a
+#   constant k acts like a sample of k * N, so SEs change by 1/sqrt(k). In a
+#   multilevel model it also shifts the balance between the data and the
+#   random effects, so ORs and random-effect SDs can move slightly.
+# Uses the final structure (re_final). For speed, add re = re_term.
+# logLik/AIC are NOT comparable here: the weights differ, so the scale differs.
+
+v.weight                                                   # check: the weight w_fit was built from
+
+# 3f-i. How far is the weight from normalised in each model sample?
+w_scale <- function(data) {                                # one row per model sample
+  data %>% summarise(n       = n(),                        # model N
+                     sum_raw = sum(.data[[v.weight]]),     # sum of the weight as it is
+                     sum_fit = sum(w_fit),                 # sum of w_fit (should equal n)
+                     k       = sum_raw / n)                # scale factor: 1 = no difference
+}
+bind_rows(FLI = w_scale(d.fl.cc), income = w_scale(d.inc.cc), .id = "outcome")
+
+# 3f-ii. Refit with the unnormalised weight
+d.fl.un  <- d.fl.cc  %>% mutate(w_fit = .data[[v.weight]]) # copy with w_fit replaced by the raw weight
+d.inc.un <- d.inc.cc %>% mutate(w_fit = .data[[v.weight]]) # (fit_clmm() always uses the column w_fit)
+
+m.fl.1.un  <- fit_clmm(d.fl.un,  "FLI_3item", rhs_ctx)     # FLI, adjusted, unnormalised weight
+m.inc.1.un <- fit_clmm(d.inc.un, "INCOME_5",  rhs_ctx)     # income, adjusted, unnormalised weight
+
+saveRDS(list(m.fl.1.un = m.fl.1.un, m.inc.1.un = m.inc.1.un),  # save: slow to refit
+        "models_unnormalised.rds")
+
+# 3f-iii. ORs and SEs side by side
+cmp_weights <- function(m.norm, m.un, data) {
+  k <- sum(data[[v.weight]]) / nrow(data)                  # scale factor from 3f-i
+  inner_join(tidy_or(m.norm, "norm") %>% select(term, OR_norm = OR, se_norm = se),  # normalised
+             tidy_or(m.un,   "un")   %>% select(term, OR_un   = OR, se_un   = se),  # unnormalised
+             by = "term") %>%
+    mutate(OR_change_pct = 100 * (OR_un / OR_norm - 1),    # % change in the OR
+           se_ratio      = se_un / se_norm,                # observed SE ratio
+           se_expected   = 1 / sqrt(k))                    # expected ratio if only N changed
+}
+cmp.fl  <- cmp_weights(m.fl.1,  m.fl.1.un,  d.fl.cc)       # FLI
+cmp.inc <- cmp_weights(m.inc.1, m.inc.1.un, d.inc.cc)      # income
+
+cmp.fl  %>% filter(term %in% v.watch)                      # key terms, FLI
+cmp.inc %>% filter(term %in% v.watch)                      # key terms, income
+
+bind_rows(FLI = cmp.fl, income = cmp.inc, .id = "outcome") %>%   # overview across all terms
+  group_by(outcome) %>%
+  summarise(max_OR_change_pct = max(abs(OR_change_pct)),   # largest OR shift
+            se_ratio_min      = min(se_ratio),             # range of SE ratios ...
+            se_ratio_max      = max(se_ratio),
+            se_expected       = first(se_expected))        # ... vs the expected ratio
+
+# 3f-iv. Random-effect SDs and ICC
+sapply(list(fl_norm  = m.fl.1,  fl_un  = m.fl.1.un,        # SD of intercept (and slope)
+            inc_norm = m.inc.1, inc_un = m.inc.1.un),
+       function(m) attr(VarCorr(m)[[1]], "stddev"))
+sapply(list(fl_norm  = m.fl.1,  fl_un  = m.fl.1.un,        # ICC
+            inc_norm = m.inc.1, inc_un = m.inc.1.un), icc)
+
+# DECISION (fill in after running):
+# k close to 1, ORs change < ~1%, SE ratios close to se_expected
+#   -> normalisation makes no practical difference; keep w_fit (SEs match the real N).
+# k far from 1 -> normalisation matters for the SEs; keep w_fit, report this check.
+
+
+
+# ---- CHECK 2: PROPORTIONAL ODDS ---------------------------------------------
 # 1a. Brant test: omnibus + one test per predictor. Significant = PO violated.
 brant(p.fl)                                                # FLI
 brant(p.inc)                                               # income
@@ -358,8 +548,10 @@ cuts.inc <- fit_cuts(d.inc.cc, "INCOME_5")                 # income cut models (
 plot_cuts(cuts.fl,  c.fl,  "FLI: coefficients across cuts")     # flat points near red line = PO fine
 plot_cuts(cuts.inc, c.inc, "Income: coefficients across cuts")  # look for trends, not p-values
 
+saveRDS(mget(c("cuts.fl", "cuts.inc")), "models_cuts.rds") # save: reload with load_models()
+#load_models("models_cuts.rds")                             # cuts.fl, cuts.inc (Check 2)
 
-# ---- CHECK 2: LINEARITY OF THE LOGIT ----------------------------------------
+# ---- CHECK 3: LINEARITY OF THE LOGIT ----------------------------------------
 spline_check <- function(data, y, m.lin, var, df) {        # compares linear vs spline term in M1
   rhs_s <- str_replace(rhs_ctx, paste0("\\b", var, "\\b"), # swap the linear term ...
                        sprintf("ns(%s, df = %d)", var, df))  # ... for a natural spline
@@ -395,8 +587,9 @@ AIC(m.fl.1.ri,  m.fl.cat)                                  # FLI: continuous vs 
 AIC(m.inc.1.ri, m.inc.cat)                                 # income
 # <<< END CHANGED
 
+saveRDS(mget(c("m.fl.cat", "m.inc.cat")), "models_iwise_cat.rds")
 
-# ---- CHECK 3: INFLUENTIAL OBSERVATIONS --------------------------------------
+# ---- CHECK 4: INFLUENTIAL OBSERVATIONS --------------------------------------
 # 3a. Cook's D and standardised residuals from the cut models (check 1c).
 #     Each respondent gets their worst value across cuts.
 infl_table <- function(cuts) {
@@ -484,7 +677,7 @@ outside_ci(loo.fl,  m.fl.1,  d.fl.cc)
 outside_ci(loo.inc, m.inc.1, d.inc.cc)
 
 
-# ---- CHECK 4: GOODNESS OF FIT -----------------------------------------------
+# ---- CHECK 5: GOODNESS OF FIT -----------------------------------------------
 # Small p = poor fit. With N ~ 80,000 both tests reject on tiny misfit,
 # so read them together with checks 1-3.
 lipsitz.test(p.fl,  g = 10)                                # Lipsitz: 10 groups of predicted score, FLI
