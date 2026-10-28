@@ -104,18 +104,33 @@ icc <- function(m) {                                       # latent-scale ICC fr
 use_slope <- TRUE                                          # must match your decision in 3e
 re_final  <- if (use_slope) re_slope else re_term          # default structure for fit_clmm()
 
-load_models("models_mundlak.rds")                          # 3a: m.*.nm, m.*.wm
-m.fl.0.ri  <- m.fl.0.nm                                    # 3b: instant, just renaming
+# ---- RELOAD ALL SAVED MODELS -------------------------------------------------
+use_slope <- TRUE                                     # must match the decision in 3e
+re_final  <- if (use_slope) re_slope else re_term     # default structure for fit_clmm()
+
+load_models("models_mundlak.rds")        # 3a: m.fl.0.nm/.wm, m.fl.1.nm/.wm, m.inc.0.nm/.wm, m.inc.1.nm/.wm
+load_models("models_uncentred.rds")      # 3c: m.fl.1.raw, m.inc.1.raw
+load_models("models_random_slope.rds")   # 3d: m.fl.0.rs, m.fl.1.rs, m.inc.0.rs, m.inc.1.rs
+load_models("models_slope_check.rds")    # 3d-3: m.fl.1.rs.chk, m.inc.1.rs.chk
+load_models("models_final.rds")          # 3e: m.fl.0, m.fl.1, m.inc.0, m.inc.1 (+ m.*.1.wm)
+load_models("models_standins.rds")       # checks: c.fl, c.inc, p.fl, p.inc
+load_models("models_cuts.rds")           # check 2: cuts.fl, cuts.inc
+load_models("models_iwise_cat.rds")      # check 3: m.fl.cat, m.inc.cat
+load_models("loo_attempt1.rds")          # check 4: loo.fl, loo.inc
+load_models("models_cat_ri.rds")
+load_models("models_cat_slope.rds")
+r <- readRDS("spline_results.rds")       # check 3: spline results, kept as one list
+load_models("models_final.rds")                            # main models
+load_models("models_mundlak.rds")                          # m.*.1.nm = random-intercept reference
+m.fl.1.ri  <- m.fl.1.nm
+m.inc.1.ri <- m.inc.1.nm
+
+# 3b: random-intercept models are the "without mean" models from 3a
+m.fl.0.ri  <- m.fl.0.nm
 m.fl.1.ri  <- m.fl.1.nm
 m.inc.0.ri <- m.inc.0.nm
 m.inc.1.ri <- m.inc.1.nm
 
-load_models("models_random_slope.rds")                     # 3d: m.*.rs
-load_models("models_final.rds")                            # 3e: m.fl.0, m.fl.1, m.inc.0, m.inc.1
-load_models("models_random_slope.rds")                     # 3d: m.*.rs
-load_models("models_slope_check.rds")                      # 3d-ii: m.fl.1.rs.chk
-load_models("models_unnormalised.rds")                   # Check 5, if needed
-load_models("loo_attempt1.rds")                          # Check 3c: loo.fl, loo.inc
 
 
 # ---- 3a. IS THE COUNTRY-YEAR MEAN NEEDED? (MUNDLAK) -------------------------
@@ -478,7 +493,7 @@ d.iwise %>%
 
 
 # ---- CHECK 2: PROPORTIONAL ODDS ---------------------------------------------
-# load_models("models_cuts.rds")                             # cuts.fl, cuts.inc (Check 2)
+load_models("models_cuts.rds")                             # cuts.fl, cuts.inc (Check 2)
 # 1a. Brant test: omnibus + one test per predictor. Significant = PO violated.
 brant(p.fl)                                                # FLI
 brant(p.inc)                                               # income
