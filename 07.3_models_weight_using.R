@@ -1,5 +1,5 @@
 # =============================================================================
-# 08_models_wgt_using.R
+# 07.4_models_wgt_using.R
 # Main models refitted with wgt_using (= wgt2, Palestine 2025 missing).
 #   Outcomes : INCOME_5 (d.inc), FLI_3item (d.fl)
 #   IWISE    : continuous (iwisescore) and categorical (iwise_cat)
@@ -70,5 +70,21 @@ m.fl.1.cat.wu  <- fit_clmm(d.fl.cc,  "FLI_3item", rhs_ctx_cat, re_slope_cat)  # 
 
 saveRDS(mget(c("m.inc.0.cat.wu", "m.inc.1.cat.wu", "m.fl.0.cat.wu", "m.fl.1.cat.wu")),
         "models_wgt_using_cat.rds")
-# Reload: list2env(readRDS("models_wgt_using_cont.rds"), envir = globalenv())
-#         list2env(readRDS("models_wgt_using_cat.rds"),  envir = globalenv())
+
+list2env(readRDS("models_wgt_using_cont.rds"), envir = globalenv())
+list2env(readRDS("models_wgt_using_cat.rds"),  envir = globalenv())
+
+
+
+
+
+
+
+
+
+s <- summary(m.fl.1.wu)
+s$condHess                                   # NaN or > 1e6 = problem
+max(abs(m.fl.1.wu$gradient))                 # large = not converged
+sum(is.na(s$coefficients[, 2]))              # must be 0
+VarCorr(m.fl.1.wu)                           # SDs plausible? correlation not ±1?
+summary(d.fl.cc$w_fit)                       # very large single weights?
