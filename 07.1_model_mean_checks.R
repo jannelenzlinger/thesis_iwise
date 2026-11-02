@@ -120,8 +120,6 @@ load_models("loo_attempt1.rds")          # check 4: loo.fl, loo.inc
 load_models("models_cat_ri.rds")
 load_models("models_cat_slope.rds")
 r <- readRDS("spline_results.rds")       # check 3: spline results, kept as one list
-load_models("models_final.rds")                            # main models
-load_models("models_mundlak.rds")                          # m.*.1.nm = random-intercept reference
 m.fl.1.ri  <- m.fl.1.nm
 m.inc.1.ri <- m.inc.1.nm
 

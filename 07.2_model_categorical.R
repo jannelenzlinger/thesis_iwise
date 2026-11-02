@@ -43,7 +43,7 @@ library(ordinal)                     # clmm()
 library(splines)                     # ns(): natural splines (Section 8b)
 
 
-# ---- 1. DATA (same as 07.1, Section 1, + iwise_num) -------------------------
+# ---- 1. DATA  -------------------------
 list2env(readRDS("data/iwise_data_prepared.rds"), envir = globalenv())  # d.fl, d.inc, rhs_ctx, v.*
 
 prep <- function(data, y) {                                # analytic sample for one outcome
@@ -165,6 +165,9 @@ fit_quality <- function(p) {
     logLik_gain = as.numeric(logLik(p$rs) - logLik(p$ri)))    # must be >= 0 (ri is nested in rs)
 }
 round(sapply(pairs, fit_quality), 4)
+
+VarCorr(m.fl.0.cat.rs)        # linear refit: "(Intercept)" and "iwise_num"
+                              # old fit:      "(Intercept)" and three "iwise_cat..." rows
 
 # 5b. Random-effect SDs and correlations: plausible? Correlations of +-1
 #     mean the slope is not identified -> use the fallback (4b).
