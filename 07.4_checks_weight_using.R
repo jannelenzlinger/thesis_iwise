@@ -37,6 +37,7 @@ library(splines)                                           # ns() natural spline
 
 # ---- 1. DATA AND MODELS -----------------------------------------------------
 # Same data preparation as in 08, so the samples are identical.
+
 list2env(readRDS("data/iwise_data_prepared.rds"), envir = globalenv())  # d.fl, d.inc, rhs_ctx, v.*
 
 prep <- function(data, y) {                                # analytic sample for one outcome
