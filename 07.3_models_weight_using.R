@@ -159,3 +159,42 @@ probs %>%                                                   # plot, adjusted mod
   labs(x = NULL, y = "Predicted probability", fill = "IWISE score") +
   theme_minimal()
 
+# ---- 9. PLOT: PREDICTED PROBABILITIES (100% stacked bars, as in pptx slide 6) ----
+# ---- 9. PLOT: PREDICTED PROBABILITIES (100% stacked bars, as in pptx slide 6) ----
+library(patchwork)                                         # combine the two panels
+
+pal <- c("#E4EEDA", "#BCD6A4", "#86B36B", "#4F8A43", "#2A5530")   # light = lowest category
+
+plot_probs <- function(df, mod, title, lab) {
+  df %>%
+    filter(model == mod) %>%
+    mutate(iwise    = factor(paste("IWISE", iwise), levels = paste("IWISE", c(24, 12, 0))),
+           category = as.character(category),               # map_dfr merged levels of both outcomes
+           category = factor(category, levels = sort(unique(as.numeric(category))), labels = lab)) %>%
+    ggplot(aes(x = prob, y = iwise, fill = category)) +
+    geom_col(width = 0.75, colour = "white", linewidth = 0.3,
+             position = position_stack(reverse = TRUE)) +          # lowest category on the left
+    geom_text(aes(label = ifelse(prob >= 0.045, scales::percent(prob, accuracy = 1), ""),
+                  colour = category),
+              position = position_stack(vjust = 0.5, reverse = TRUE), size = 3.3) +
+    scale_fill_manual(values = pal) +
+    scale_colour_manual(values = c("#1F1F1F", "#1F1F1F", "#1F1F1F", "white", "white"), guide = "none") +
+    scale_x_continuous(labels = scales::percent, expand = c(0, 0)) +
+    labs(title = title, x = NULL, y = NULL, fill = NULL) +
+    guides(fill = guide_legend(nrow = 1)) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom",
+          panel.grid = element_blank(),
+          axis.text.x = element_blank(),
+          plot.title = element_text(face = "bold", size = 11))
+}
+
+p.fl  <- plot_probs(probs, "fl.1",  "Financial Life Index category", c("0", "25", "50", "75", "100"))
+p.inc <- plot_probs(probs, "inc.1", "Income quintile", c("Q1 (poorest)", "Q2", "Q3", "Q4", "Q5 (richest)"))
+
+p.probs <- p.fl / p.inc +                               # stacked: one panel per row
+  plot_annotation(caption = "Fully adjusted models, reference person (all covariates at reference level / centred mean, random effects = 0).")
+p.probs
+
+ggsave("fig_pred_probs_wu.png", p.probs, width = 9, height = 6, dpi = 300, bg = "white")
+
