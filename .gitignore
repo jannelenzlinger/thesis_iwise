@@ -58,3 +58,4 @@ IWISE_all.csv
 *.png
 output/
 
+*.rds
