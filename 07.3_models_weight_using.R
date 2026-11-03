@@ -75,16 +75,87 @@ list2env(readRDS("models_wgt_using_cont.rds"), envir = globalenv())
 list2env(readRDS("models_wgt_using_cat.rds"),  envir = globalenv())
 
 
+# ---- 5. LOAD MODELS (continuous IWISE only) ----------------------------------
+# Run sections 0-2 first (data + helpers), skip 3-4 (slow refits).
+list2env(readRDS("models_wgt_using_cont.rds"), envir = globalenv())
+
+mods <- list(                                              # model + its analytic sample + outcome
+  inc.0 = list(m = m.inc.0.wu, d = d.inc.cc, y = "INCOME_5"),
+  inc.1 = list(m = m.inc.1.wu, d = d.inc.cc, y = "INCOME_5"),
+  fl.0  = list(m = m.fl.0.wu,  d = d.fl.cc,  y = "FLI_3item"),
+  fl.1  = list(m = m.fl.1.wu,  d = d.fl.cc,  y = "FLI_3item")
+)
 
 
+# ---- 6. CONVERGENCE / FIT CHECKS ---------------------------------------------
+check_fit <- function(x) {
+  s  <- summary(x$m)
+  vc <- as.matrix(VarCorr(x$m)[[1]])
+  cat("\n================", deparse(substitute(x)), "================\n")
+  cat("condHess        :", s$condHess, "  (NaN or > 1e6 = problem)\n")
+  cat("max |gradient|  :", max(abs(x$m$gradient)), "  (large = not converged)\n")
+  cat("NA std. errors  :", sum(is.na(s$coefficients[, 2])), "  (must be 0)\n")
+  cat("RE SDs          :", round(sqrt(diag(vc)), 4), "\n")
+  if (ncol(vc) > 1)
+    cat("RE correlation  :", round(cov2cor(vc)[1, 2], 3), "  (+-1 = problem)\n")
+  cat("weights         : n =", nrow(x$d), " sum =", round(sum(x$d$w_fit)), "\n")
+  print(summary(x$d$w_fit))                                # very large single weights?
+}
+
+for (nm in names(mods)) { cat("\n#####", nm); check_fit(mods[[nm]]) }
 
 
+# ---- 7. IWISE EFFECT: beta, OR, OR per 12 points, ICC, country spread ---------
+iwise_res <- function(m, k = 12) {
+  ct <- summary(m)$coefficients
+  b  <- ct["iwisescore", "Estimate"]
+  se <- ct["iwisescore", "Std. Error"]
+  vc <- as.matrix(VarCorr(m)[[1]])
+  sd_sl <- if (ncol(vc) > 1) sqrt(vc[2, 2]) else NA       # no slope in income M0
+  tibble(
+    beta    = b, beta_lo = b - 1.96 * se, beta_hi = b + 1.96 * se,
+    p       = ct["iwisescore", "Pr(>|z|)"],
+    OR      = exp(b), OR_lo = exp(b - 1.96 * se), OR_hi = exp(b + 1.96 * se),
+    OR12    = exp(k * b), OR12_lo = exp(k * (b - 1.96 * se)), OR12_hi = exp(k * (b + 1.96 * se)),
+    ICC     = vc[1, 1] / (vc[1, 1] + pi^2 / 3),            # latent-scale ICC at IWISE = 0
+    ORc_lo  = exp(b - 1.96 * sd_sl),                        # range of 95% of country ORs
+    ORc_hi  = exp(b + 1.96 * sd_sl)
+  )
+}
+
+res <- map_dfr(mods, ~ iwise_res(.x$m), .id = "model")
+res %>% mutate(across(where(is.numeric), ~ signif(.x, 3))) %>% print(width = Inf)
+
+# attenuation of beta1 after adjustment (%)
+c(income = 100 * (1 - res$beta[res$model == "inc.1"] / res$beta[res$model == "inc.0"]),
+  FLI    = 100 * (1 - res$beta[res$model == "fl.1"]  / res$beta[res$model == "fl.0"]))
 
 
+# ---- 8. PREDICTED PROBABILITIES PER OUTCOME CATEGORY -------------------------
+# Reference person: all covariates at reference level / centred mean, random effects = 0.
+# P(Y <= j) = plogis(theta_j - beta * IWISE); category prob = difference of neighbours.
+pred_probs <- function(x, iwise = c(0, 12, 24)) {
+  th  <- x$m$alpha                                          # thresholds
+  b   <- x$m$beta["iwisescore"]
+  lev <- levels(x$d[[x$y]])
+  map_dfr(iwise, function(v) {
+    cum <- plogis(th - b * v)
+    tibble(iwise = v, category = factor(lev, levels = lev), prob = diff(c(0, cum, 1)))
+  })
+}
 
-s <- summary(m.fl.1.wu)
-s$condHess                                   # NaN or > 1e6 = problem
-max(abs(m.fl.1.wu$gradient))                 # large = not converged
-sum(is.na(s$coefficients[, 2]))              # must be 0
-VarCorr(m.fl.1.wu)                           # SDs plausible? correlation not ±1?
-summary(d.fl.cc$w_fit)                       # very large single weights?
+probs <- map_dfr(mods, pred_probs, .id = "model")
+
+probs %>%                                                   # table like slide 6
+  mutate(prob = round(prob, 3)) %>%
+  pivot_wider(names_from = category, values_from = prob) %>%
+  print(n = Inf)
+
+probs %>%                                                   # plot, adjusted models
+  filter(model %in% c("inc.1", "fl.1")) %>%
+  ggplot(aes(category, prob, fill = factor(iwise))) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ model, scales = "free_x") +
+  labs(x = NULL, y = "Predicted probability", fill = "IWISE score") +
+  theme_minimal()
+
