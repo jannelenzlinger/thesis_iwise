@@ -198,3 +198,28 @@ p.probs
 
 ggsave("fig_pred_probs_wu.png", p.probs, width = 9, height = 6, dpi = 300, bg = "white")
 
+
+
+conv_check <- function(m) {
+  H <- m$Hessian; g <- m$gradient
+  step <- tryCatch(solve(H, g), error = function(e) NA)
+  se   <- tryCatch(sqrt(diag(solve(H))), error = function(e) NA)
+  c(max_grad = max(abs(g)),
+    max_step_rel_se = max(abs(step) / se))   # < ~0.001: estimates have converged
+}
+conv_check(m.inc.1.wu)
+
+H <- m.fl.1.wu$Hessian; g <- m.fl.1.wu$gradient
+rel <- abs(solve(H, g)) / sqrt(diag(solve(H)))
+sort(setNames(rel, names(g)), decreasing = TRUE)[1:5]
+
+
+
+k <- mean(d.fl.cc$wgt_using)
+k
+rel / sqrt(k)          # step/SE on the mean-1 weight scale
+
+rel[grep("iwise", names(rel))]
+
+m.fl.1.wu$ST          # the raw L matrix
+VarCorr(m.fl.1.wu)    # SDs and correlation, computed from L L'
