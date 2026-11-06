@@ -120,7 +120,8 @@ fits <- future_map(specs, fit_one, data = d.opt,
 plan(sequential)
 saveRDS(fits, "models_fl_options.rds")
 # fits <- readRDS("models_fl_options.rds")         # reload later without refitting
-
+list2env(setNames(fits, paste0("m.fl.opt.", names(fits))), envir = globalenv())0
+# gives m.fl.opt.base, m.fl.opt.no_gdp, m.fl.opt.no_wgi, m.fl.opt.no_ri, m.fl.opt.fe_cy
 
 # ---- 7. CONVERGENCE CHECK ---------------------------------------------------
 # rel = |Newton step| / SE per parameter. Below ~0.001 = converged.
@@ -171,6 +172,13 @@ compare <- bind_rows(Map(summarise_fit, fits, names(fits))) %>%
 
 print(as.data.frame(compare), digits = 4)
 write.csv(compare, "fl_options_compare.csv", row.names = FALSE)
+
+m.fl.1.wu$optRes$message          # old model
+fits$base$optRes$message          # new model
+m.fl.1.wu$control                 # limits the old model used
+c(old = nobs(m.fl.1.wu), new = nobs(fits$base))   # same sample?
+
+cov2cor(vcov(fits$base))[c("log_gdp_c", "wgi_ge_sc_c")]
 
 
 # ---- 9. HOW TO READ THE TABLE -----------------------------------------------
