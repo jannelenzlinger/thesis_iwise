@@ -8,11 +8,11 @@
 #   m.inc.0  INCOME_5  ~ iwisescore                                  (unadjusted)
 #   m.inc.1  INCOME_5  ~ iwisescore + individual covariates + GDP, JMP, DALYs
 #
-#   Random part: random intercept + random IWISE slope per country_year,  # >>> CHANGED
-#                except m.inc.0: random intercept only (in earlier runs  # >>> CHANGED
-#                the random slope was not identified for this model).    # >>> CHANGED
-#   Weights:     w_fit from 05 = wgtnorm_using rescaled to sum to the    # >>> CHANGED
-#                complete-case N (each country-year weighted equally).   # >>> CHANGED
+#   Random part: random intercept + random IWISE slope per country_year, 
+#                except m.inc.0: random intercept only (in earlier runs 
+#                the random slope was not identified for this model). 
+#   Weights:     w_fit from 05 = wgtnorm_using rescaled to sum to the  
+#                complete-case N (each country-year weighted equally). 
 #   Link: logit. Laplace approximation (nAGQ = 1). Raised iteration
 #   limits (ctrl, section 4).
 #   Unadjusted and adjusted models of one outcome use the SAME rows.
@@ -180,3 +180,119 @@ summarise_fit <- function(m, name) {
 check <- bind_rows(Map(summarise_fit, fits, names(fits)))   # one row per model
 print(as.data.frame(check), digits = 4)                     # print all columns
 write.csv(check, "final_models_check.csv", row.names = FALSE)
+
+# ---- 8. PROPORTIONAL ODDS CHECK ---------------------------------------------
+# clmm assumes ONE coefficient per predictor for all cuts of the outcome.
+# Check: fit a separate binary model for each cut (Y > k) with the same fixed
+# and random part, and compare its coefficients with the clmm estimate.
+# Flat estimates around the red dashed line = PO holds; a trend or CIs that
+# miss the line = violation. Signs match: positive = higher category in both.
+#
+# Starting here without refitting? Run sections 0-4, then:
+# fits <- readRDS("models_final.rds")
+ 
+library(lme4)                                   # glmer(): binary mixed logit per cut
+library(purrr)                                  # map(), list_rbind()
+library(ggplot2)                                # figure
+ 
+po_models <- c("m.fl.1", "m.inc.1")             # fully adjusted models to check
+cut_re    <- "same"                             # "same": glmer with the model's random part (comparable to clmm, slow)
+                                                # "none": plain glm per cut (fast, rough first look)
+ctrl_glmer <- glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+ 
+# One job per model x cut
+jobs <- list_rbind(map(po_models, function(nm) {
+  s <- specs[[nm]]
+  K <- nlevels(get(s$data)[[s$y]])              # number of outcome categories
+  tibble(model = nm, k = 1:(K - 1))
+}))
+jobs <- split(jobs, seq_len(nrow(jobs)))        # list of one-row tibbles for future_map()
+ 
+# Fits the binary model for one cut, returns its coefficients
+fit_cut <- function(job, specs, datasets, cut_re, ctrl_glmer) {
+  s <- specs[[job$model]]
+  d <- datasets[[s$data]]
+  d$y_bin <- as.integer(as.integer(d[[s$y]]) > job$k)        # 1 = above category k
+  fixed   <- paste("y_bin ~", paste(s$rhs, collapse = " + "))
+  warn    <- character(0)
+  m <- withCallingHandlers(
+    tryCatch(
+      if (cut_re == "same") {
+        lme4::glmer(as.formula(paste(fixed, "+", s$re)), data = d, weights = w_fit,
+                    family = binomial, nAGQ = 1, control = ctrl_glmer)
+      } else {
+        glm(as.formula(fixed), data = d, weights = w_fit, family = quasibinomial())
+      },
+      error = function(e) e),
+    warning = function(w) {                     # non-integer weights warning is expected: drop it
+      if (!grepl("non-integer", conditionMessage(w))) warn <<- c(warn, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    })
+  if (inherits(m, "error"))
+    return(tibble::tibble(model = job$model, cut = job$k, error = conditionMessage(m)))
+  cf <- summary(m)$coefficients
+  tibble::tibble(model = job$model, cut = job$k, term = rownames(cf),
+                 est = cf[, 1], se = cf[, 2],
+                 warning = if (length(warn)) paste(warn, collapse = "; ") else NA_character_,
+                 error = NA_character_)
+}
+ 
+# Run in parallel (one cut per core; watch RAM as in section 6)
+plan(multisession, workers = min(length(jobs), parallelly::availableCores(omit = 1)))
+po_cuts <- future_map(jobs, fit_cut, specs = specs, datasets = list(d.fl = d.fl, d.inc = d.inc),
+                      cut_re = cut_re, ctrl_glmer = ctrl_glmer,
+                      .options = furrr_options(seed = TRUE, packages = c("lme4", "tibble")))
+plan(sequential)
+po_cuts <- list_rbind(po_cuts)
+saveRDS(po_cuts, "po_cuts.rds")                 # reload later: po_cuts <- readRDS("po_cuts.rds")
+ 
+# Failed fits or convergence warnings (check before reading the figure)
+po_cuts %>% filter(!is.na(error) | !is.na(warning)) %>% distinct(model, cut, warning, error)
+ 
+# clmm (PO) estimates: fixed effects only, thresholds dropped
+po_ref <- list_rbind(map(po_models, function(nm) {
+  b <- fits[[nm]]$beta
+  tibble(model = nm, term = names(b), est_po = unname(b))
+}))
+ 
+po_cuts <- po_cuts %>%
+  filter(is.na(error), term != "(Intercept)") %>%
+  mutate(lo = est - 1.96 * se, hi = est + 1.96 * se) %>%
+  left_join(po_ref, by = c("model", "term"))
+ 
+# Figure per model
+plot_po <- function(nm, title) {
+  ggplot(filter(po_cuts, model == nm), aes(cut, est)) +
+    geom_hline(yintercept = 0, colour = "grey60") +
+    geom_hline(aes(yintercept = est_po), colour = "red", linetype = "dashed") +
+    geom_pointrange(aes(ymin = lo, ymax = hi)) +
+    facet_wrap(~ term, scales = "free_y") +
+    scale_x_continuous(breaks = function(x) seq(1, floor(max(x)))) +
+    labs(title = paste0(title, ": coefficients across cuts"),
+         subtitle = "Points: binary model per cut (95% CI). Red dashed: clmm estimate.",
+         x = "Cut (above category k)", y = "Log-odds (95% CI)") +
+    theme_minimal(base_size = 11) +
+    theme(strip.text = element_text(size = 8))
+}
+p_po_fl  <- plot_po("m.fl.1",  "FLI")
+p_po_inc <- plot_po("m.inc.1", "Income")
+p_po_fl
+p_po_fl; p_po_inc
+ggsave("po_check_fli.png",    p_po_fl,  width = 12, height = 8, dpi = 300)
+ggsave("po_check_income.png", p_po_inc, width = 12, height = 8, dpi = 300)
+ 
+# Summary per predictor: spread across cuts, cuts whose CI misses the clmm
+# estimate, and sign changes. Sorted worst first.
+po_summary <- po_cuts %>%
+  group_by(model, term) %>%
+  summarise(est_po      = first(est_po),
+            min_cut     = min(est),
+            max_cut     = max(est),
+            spread      = max_cut - min_cut,
+            n_cuts_off  = sum(est_po < lo | est_po > hi),
+            sign_change = any(sign(est) != sign(first(est_po))),
+            .groups = "drop") %>%
+  arrange(model, desc(n_cuts_off), desc(spread))
+print(as.data.frame(po_summary), digits = 3)
+write.csv(po_summary, "po_check_summary.csv", row.names = FALSE)
+
