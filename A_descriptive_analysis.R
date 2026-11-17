@@ -154,17 +154,97 @@ table(n_miss, is.na(d.iwise$iwise_score))
 
 
 
+# ============================================================================
+# Exclusion flow for the sample description (Results 3.1)
+# Counts each exclusion step in order: a respondent is counted only at the
+# FIRST step that removes them, so the steps add up to the final N.
+# Needs: d.iwise (all respondents), v.model.fl, v.model.inc (from 05 script)
+# ============================================================================
 
+library(dplyr)
 
+# Variable names in the model lists must exist in d.iwise; if this stops,
+# swap in the uncentred names (e.g. hhsize instead of hhsize_c)
+stopifnot(all(v.model.fl  %in% names(d.iwise)),
+          all(v.model.inc %in% names(d.iwise)))
 
-### Testing the assumptions for the logistic regression
+# ---- 1. Full dataset --------------------------------------------------------
+d.iwise %>% summarise(n = n(),
+                      countries = n_distinct(country_name),
+                      country_years = n_distinct(country_year))
 
-# independence of observations
+# Check that country_year 19 is Palestine 2025 (from earlier output)
+d.iwise %>% filter(country_year == 19) %>% count(country_name)
 
-# no multicollinearity
+# ---- 2. Flow function -------------------------------------------------------
+flow <- function(data, steps) {
+  keep <- rep(TRUE, nrow(data))
+  out  <- tibble(step = "Full dataset", n_excluded = NA_integer_,
+                 n_remaining = nrow(data),
+                 countries   = n_distinct(data$country_name))
+  for (s in names(steps)) {
+    drop <- keep & steps[[s]]                 # newly excluded at this step
+    keep <- keep & !steps[[s]]
+    out  <- add_row(out, step = s, n_excluded = sum(drop),
+                    n_remaining = sum(keep),
+                    countries   = n_distinct(data$country_name[keep]))
+  }
+  list(table = out, keep = keep)
+}
 
-# linearity of predictors with the log-odds
+# ---- 3. Shared exclusions ---------------------------------------------------
+shared <- with(d.iwise, list(
+  "Palestine 2025 (no weights)" = country_year %in% 19,
+  "Venezuela (no GDP)"          = country_name %in% "Venezuela, RB",
+  "Argentina (outdated JMP)"    = country_name %in% "Argentina",
+  "Missing IWISE item(s)"       = is.na(iwisescore)
+))
 
+# ---- 4. FLI sample ----------------------------------------------------------
+fl <- flow(d.iwise, c(shared, with(d.iwise, list(
+  "Egypt (FLI not fielded)"          = country_name %in% "Egypt, Arab Rep.",
+  "Morocco (FLI not fielded)"        = country_name %in% "Morocco",
+  "Missing FLI"                      = is.na(FLI_3item)
+)), list(
+  "Missing covariates" = !complete.cases(select(d.iwise, all_of(v.model.fl)))
+)))
+fl$table
 
-# adequate events per variable.
+# ---- 5. Income sample -------------------------------------------------------
+inc <- flow(d.iwise, c(shared, with(d.iwise, list(
+  "Zimbabwe (no income quintiles)" = country_name %in% "Zimbabwe",
+  "Missing income quintile"        = is.na(INCOME_5)
+)), list(
+  "Missing covariates" = !complete.cases(select(d.iwise, all_of(v.model.inc)))
+)))
+inc$table
 
+# ---- 6. Raw country sizes (for the text) ------------------------------------
+d.iwise %>%
+  filter(country_name %in% c("Argentina", "Venezuela, RB", "Zimbabwe",
+                             "Egypt, Arab Rep.", "Morocco", "India") |
+         country_year %in% 19) %>%
+  count(country_name, country_year)
+
+# ---- 7. India: FLI loss -----------------------------------------------------
+d.iwise %>%
+  filter(country_name == "India", !is.na(iwisescore)) %>%
+  summarise(n = n(),
+            missing_fli = sum(is.na(FLI_3item)),
+            pct_missing = round(100 * mean(is.na(FLI_3item)), 1))
+
+# ---- 8. Check against the model samples -------------------------------------
+# Should match 73,109 / 72 and 83,075 / 73 (or your current numbers)
+c(fli = sum(fl$keep), income = sum(inc$keep))
+c(fli = sum(d.fl$cc), income = sum(d.inc$cc))
+
+# ---- 9. IWISE: kept vs dropped (respondents with an IWISE score) -----------
+iwise_gap <- function(keep) {
+  d.iwise %>%
+    mutate(kept = keep) %>%
+    filter(!is.na(iwisescore)) %>%
+    group_by(kept) %>%
+    summarise(n = n(), mean_iwise = round(mean(iwisescore), 2), .groups = "drop")
+}
+iwise_gap(fl$keep)
+iwise_gap(inc$keep)
