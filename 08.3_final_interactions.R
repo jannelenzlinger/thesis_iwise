@@ -251,6 +251,11 @@ for (nm in names(rhs_int)) {                               # loop over the 5 spe
   saveRDS(list(m.fl.int = m.fl.int, m.inc.int = m.inc.int, spec.int = spec.now), f.int)   # save models + spec (resumable)
 }
 
+getwd()                                         # is this the right folder?
+saveRDS(list(m.fl.int = m.fl.int, m.inc.int = m.inc.int, spec.int = spec.now),
+        "models_cont_interactions.rds")
+
+
 # Fit quality: every model should have converged = TRUE
 conv <- bind_rows(FLI = imap_dfr(m.fl.int,  fit_quality),  # diagnostics, FLI models
                   INC = imap_dfr(m.inc.int, fit_quality),  # diagnostics, income models
