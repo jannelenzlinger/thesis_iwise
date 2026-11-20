@@ -57,5 +57,7 @@ IWISE_all.csv
 *.sav
 *.png
 output/
-
+*.txt
+*.db
 *.rds
+*.docx            # ignores every Word file in the project
